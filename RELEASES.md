@@ -11,6 +11,9 @@ Released on TBD (UTC).
 - Added `calculate_commission` to `ExecutionClient` for venue-specific reconciliation fills
 
 ### Breaking Changes
+- Renamed `StrategyConfig.external_order_claims` to `claimed_instrument_ids` (Rust and PyO3 v2 only; Cython v1 unchanged)
+- Renamed `LiveExecEngineConfig.filter_unclaimed_external_orders` to `drop_unclaimed_external_orders` (Rust and PyO3 v2 only; Cython v1 unchanged)
+- Renamed `Strategy` trait accessor `external_order_claims()` to `claimed_instrument_ids()` (Rust)
 - Replaced `is_sandbox: bool` with `environment: AxEnvironment` on `AxDataClientConfig` and `AxExecClientConfig` (Rust and Python), aligning with the Binance/Bybit/Kraken adapter pattern. Default is `Sandbox`.
 - Changed `get_cached_bybit_http_client` signature: replaced `demo`/`testnet` bools with `environment: BybitEnvironment`
 - Changed Rust `UnsubscribeBookSnapshots` to require `interval_ms` for exact snapshot interval unsubscribe

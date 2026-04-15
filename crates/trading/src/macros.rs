@@ -58,7 +58,7 @@
 /// }
 ///
 /// nautilus_strategy!(MyStrategy, strat_core, {
-///     fn external_order_claims(&self) -> Option<Vec<InstrumentId>> {
+///     fn claimed_instrument_ids(&self) -> Option<Vec<InstrumentId>> {
 ///         None
 ///     }
 /// });

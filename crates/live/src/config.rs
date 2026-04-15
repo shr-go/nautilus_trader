@@ -302,9 +302,9 @@ pub struct LiveExecEngineConfig {
     pub reconciliation_lookback_mins: Option<u32>,
     /// Specific instrument IDs to reconcile (if None, reconciles all).
     pub reconciliation_instrument_ids: Option<Vec<String>>,
-    /// If unclaimed order events with an EXTERNAL strategy ID should be filtered/dropped.
+    /// If unclaimed order events with an EXTERNAL strategy ID should be dropped.
     #[builder(default)]
-    pub filter_unclaimed_external_orders: bool,
+    pub drop_unclaimed_external_orders: bool,
     /// If position status reports are filtered from reconciliation.
     #[builder(default)]
     pub filter_position_reports: bool,
@@ -869,7 +869,7 @@ mod tests {
         assert_eq!(config.risk_engine.qsize, 100_000);
         assert_eq!(config.exec_engine.qsize, 100_000);
         assert!(config.exec_engine.reconciliation);
-        assert!(!config.exec_engine.filter_unclaimed_external_orders);
+        assert!(!config.exec_engine.drop_unclaimed_external_orders);
         assert!(config.data_clients.is_empty());
         assert!(config.exec_clients.is_empty());
     }
@@ -1277,7 +1277,7 @@ mod tests {
         assert_eq!(config.reconciliation_lookback_mins, None);
         assert_eq!(config.reconciliation_instrument_ids, None);
         assert_eq!(config.filtered_client_order_ids, None);
-        assert!(!config.filter_unclaimed_external_orders);
+        assert!(!config.drop_unclaimed_external_orders);
         assert!(!config.filter_position_reports);
         assert!(config.generate_missing_orders);
         assert_eq!(config.inflight_check_interval_ms, 2_000);

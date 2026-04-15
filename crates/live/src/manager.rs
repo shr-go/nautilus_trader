@@ -222,7 +222,7 @@ impl From<&LiveExecEngineConfig> for ExecutionManagerConfig {
             reconciliation: config.reconciliation,
             lookback_mins: config.reconciliation_lookback_mins.map(|m| m as u64),
             reconciliation_instrument_ids,
-            filter_unclaimed_external: config.filter_unclaimed_external_orders,
+            filter_unclaimed_external: config.drop_unclaimed_external_orders,
             filter_position_reports: config.filter_position_reports,
             filtered_client_order_ids,
             generate_missing_orders: config.generate_missing_orders,

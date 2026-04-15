@@ -103,7 +103,7 @@ class LiveExecEngineConfig:
         reconciliation_startup_delay_secs: float | None = None,
         reconciliation_lookback_mins: int | None = None,
         reconciliation_instrument_ids: typing.Sequence[str] | None = None,
-        filter_unclaimed_external_orders: bool | None = None,
+        drop_unclaimed_external_orders: bool | None = None,
         filter_position_reports: bool | None = None,
         filtered_client_order_ids: typing.Sequence[str] | None = None,
         generate_missing_orders: bool | None = None,

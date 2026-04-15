@@ -91,11 +91,11 @@ pub trait Strategy: DataActor {
     /// Generated automatically by the `nautilus_strategy!` macro.
     fn core_mut(&mut self) -> &mut StrategyCore;
 
-    /// Returns the external order claims for this strategy.
+    /// Returns the instrument IDs for which this strategy claims external orders.
     ///
-    /// These are instrument IDs whose external orders should be claimed by this strategy
-    /// during reconciliation.
-    fn external_order_claims(&self) -> Option<Vec<InstrumentId>> {
+    /// External orders (with an EXTERNAL strategy ID) for matching instrument IDs will be
+    /// associated with (claimed by) this strategy during reconciliation.
+    fn claimed_instrument_ids(&self) -> Option<Vec<InstrumentId>> {
         None
     }
 
@@ -2877,7 +2877,7 @@ mod tests {
     }
 
     nautilus_strategy!(MacroTestCustomField, inner, {
-        fn external_order_claims(&self) -> Option<Vec<InstrumentId>> {
+        fn claimed_instrument_ids(&self) -> Option<Vec<InstrumentId>> {
             None
         }
     });
@@ -2906,6 +2906,6 @@ mod tests {
             inner: StrategyCore::new(config.clone()),
         };
         assert_eq!(custom.core().config.strategy_id, config.strategy_id);
-        assert!(custom.external_order_claims().is_none());
+        assert!(custom.claimed_instrument_ids().is_none());
     }
 }

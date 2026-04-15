@@ -1305,7 +1305,7 @@ impl LiveNode {
 
         // Register external order claims before adding strategy (which moves it)
         let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
-        if let Some(claims) = strategy.external_order_claims() {
+        if let Some(claims) = strategy.claimed_instrument_ids() {
             for instrument_id in claims {
                 self.exec_manager
                     .claim_external_orders(instrument_id, strategy_id);
@@ -1313,7 +1313,7 @@ impl LiveNode {
             log_info!(
                 "Registered external order claims for {}: {:?}",
                 strategy_id,
-                strategy.external_order_claims(),
+                strategy.claimed_instrument_ids(),
                 color = LogColor::Blue
             );
         }

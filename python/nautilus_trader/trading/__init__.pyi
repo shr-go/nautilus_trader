@@ -448,7 +448,7 @@ class StrategyConfig:
         strategy_id: model.StrategyId | None,
         order_id_tag: str | None,
         oms_type: model.OmsType | None,
-        external_order_claims: typing.Sequence[model.InstrumentId] | None,
+        claimed_instrument_ids: typing.Sequence[model.InstrumentId] | None,
         manage_contingent_orders: bool,
         manage_gtd_expiry: bool,
         manage_stop: bool,

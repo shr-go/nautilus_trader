@@ -56,8 +56,8 @@ pub struct ExecTester {
 }
 
 nautilus_strategy!(ExecTester, {
-    fn external_order_claims(&self) -> Option<Vec<InstrumentId>> {
-        self.config.base.external_order_claims.clone()
+    fn claimed_instrument_ids(&self) -> Option<Vec<InstrumentId>> {
+        self.config.base.claimed_instrument_ids.clone()
     }
 });
 

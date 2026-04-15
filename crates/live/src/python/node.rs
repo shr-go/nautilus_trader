@@ -449,17 +449,17 @@ impl LiveNode {
         .map_err(to_pyruntime_err)?;
 
         // TODO: Register external order claims with the execution manager
-        // once PyStrategy exposes external_order_claims publicly.
-        // Currently external_order_claims are only handled for Rust-native
+        // once PyStrategy exposes claimed_instrument_ids publicly.
+        // Currently claimed_instrument_ids are only handled for Rust-native
         // strategies via LiveNode::add_strategy<T>().
         Python::attach(|py| {
             let py_strategy = python_strategy.bind(py);
-            if let Ok(claims) = py_strategy.getattr("external_order_claims")
+            if let Ok(claims) = py_strategy.getattr("claimed_instrument_ids")
                 && !claims.is_none()
                 && claims.len().unwrap_or(0) > 0
             {
                 log::warn!(
-                    "Strategy '{strategy_id}' has external_order_claims configured, \
+                    "Strategy '{strategy_id}' has claimed_instrument_ids configured, \
                      but these are not yet supported for Python strategies on the Rust backend"
                 );
             }

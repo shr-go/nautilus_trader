@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tester_config = ExecTesterConfig::builder()
         .base(StrategyConfig {
             strategy_id: Some(StrategyId::from("EXEC_TESTER-001")),
-            external_order_claims: Some(vec![instrument_id]),
+            claimed_instrument_ids: Some(vec![instrument_id]),
             // OKX doesn't allow hyphens in client order IDs
             use_hyphens_in_client_order_ids: false,
             ..Default::default()
