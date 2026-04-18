@@ -278,6 +278,10 @@ cdef inline str data_tag_to_str(Data_t_Tag tag):
         return "INDEX_PRICE_UPDATE"
     elif tag == Data_t_Tag.INSTRUMENT_CLOSE:
         return "INSTRUMENT_CLOSE"
+    elif tag == Data_t_Tag.LIQUIDATION:
+        return "LIQUIDATION"
+    elif tag == Data_t_Tag.OPEN_INTEREST:
+        return "OPEN_INTEREST"
     else:
         return f"UNKNOWN({int(tag)})"
 
@@ -298,6 +302,18 @@ cdef inline IndexPriceUpdate index_price_from_mem_c(IndexPriceUpdate_t mem):
     cdef IndexPriceUpdate update = IndexPriceUpdate.__new__(IndexPriceUpdate)
     update._mem = mem
     return update
+
+
+cdef inline Liquidation liquidation_from_mem_c(Liquidation_t mem):
+    cdef Liquidation liq = Liquidation.__new__(Liquidation)
+    liq._mem = mem
+    return liq
+
+
+cdef inline OpenInterest open_interest_from_mem_c(OpenInterest_t mem):
+    cdef OpenInterest oi = OpenInterest.__new__(OpenInterest)
+    oi._mem = mem
+    return oi
 
 
 # SAFETY: Do NOT deallocate the capsule here
@@ -324,6 +340,10 @@ cpdef list capsule_to_list(capsule):
             objects.append(mark_price_from_mem_c(ptr[i].mark_price_update))
         elif ptr[i].tag == Data_t_Tag.INDEX_PRICE_UPDATE:
             objects.append(index_price_from_mem_c(ptr[i].index_price_update))
+        elif ptr[i].tag == Data_t_Tag.LIQUIDATION:
+            objects.append(liquidation_from_mem_c(ptr[i].liquidation))
+        elif ptr[i].tag == Data_t_Tag.OPEN_INTEREST:
+            objects.append(open_interest_from_mem_c(ptr[i].open_interest))
         else:
             raise RuntimeError("Invalid data element to convert from `PyCapsule`")
 
@@ -363,6 +383,10 @@ cpdef list pyo3_list_to_data_list(list pyo3_items):
             result.append(InstrumentStatus.from_pyo3(item))
         elif type_name == "InstrumentClose":
             result.append(InstrumentClose.from_pyo3(item))
+        elif type_name == "Liquidation":
+            result.append(Liquidation.from_pyo3(item))
+        elif type_name == "OpenInterest":
+            result.append(OpenInterest.from_pyo3(item))
         elif type_name == "CustomData":
             inner = item.data
             pyo3_dt = item.data_type
@@ -399,6 +423,10 @@ cpdef Data capsule_to_data(capsule):
         return mark_price_from_mem_c(ptr.mark_price_update)
     elif ptr.tag == Data_t_Tag.INDEX_PRICE_UPDATE:
         return index_price_from_mem_c(ptr.index_price_update)
+    elif ptr.tag == Data_t_Tag.LIQUIDATION:
+        return liquidation_from_mem_c(ptr.liquidation)
+    elif ptr.tag == Data_t_Tag.OPEN_INTEREST:
+        return open_interest_from_mem_c(ptr.open_interest)
     else:
         raise RuntimeError("Invalid data element to convert from `PyCapsule`")
 

@@ -325,6 +325,11 @@ pub fn parse_mark_price(
 }
 
 /// Maps a [`BinanceOrderStatus`] to the canonical Nautilus [`OrderStatus`].
+///
+/// Kept in lockstep with `_BINANCE_ORDER_STATUS_TO_NAUTILUS` in
+/// `nautilus_trader/adapters/binance/futures/schemas/market.py` and with the
+/// shared `BinanceEnumParser.ext_to_int_status` table so both backends publish
+/// the same canonical `OrderStatus` for a given liquidation event.
 fn map_binance_order_status(status: BinanceOrderStatus) -> OrderStatus {
     match status {
         BinanceOrderStatus::New | BinanceOrderStatus::PendingNew => OrderStatus::Accepted,
@@ -332,9 +337,11 @@ fn map_binance_order_status(status: BinanceOrderStatus) -> OrderStatus {
         BinanceOrderStatus::Filled
         | BinanceOrderStatus::NewAdl
         | BinanceOrderStatus::NewInsurance => OrderStatus::Filled,
-        BinanceOrderStatus::Canceled | BinanceOrderStatus::PendingCancel => OrderStatus::Canceled,
+        BinanceOrderStatus::Canceled => OrderStatus::Canceled,
+        BinanceOrderStatus::PendingCancel => OrderStatus::PendingCancel,
         BinanceOrderStatus::Rejected => OrderStatus::Rejected,
-        BinanceOrderStatus::Expired | BinanceOrderStatus::ExpiredInMatch => OrderStatus::Expired,
+        BinanceOrderStatus::Expired => OrderStatus::Expired,
+        BinanceOrderStatus::ExpiredInMatch => OrderStatus::Canceled,
         BinanceOrderStatus::Unknown => OrderStatus::Accepted,
     }
 }

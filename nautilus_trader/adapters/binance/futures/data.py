@@ -228,9 +228,11 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
         if secs < 5:
             secs = 5  # Do not poll REST faster than 5s by default
 
-        task = self._loop.create_task(
+        # Register via the LiveDataClient task registry so disconnect/shutdown
+        # cancels the loop together with the rest of the client's pending tasks.
+        task = self.create_task(
             self._open_interest_poll_loop(instrument_id, secs),
-            name=f"oi-poll-{instrument_id}",
+            log_msg=f"oi-poll-{instrument_id}",
         )
         self._oi_poll_tasks[instrument_id] = task
 
