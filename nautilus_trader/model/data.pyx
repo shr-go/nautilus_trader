@@ -6325,6 +6325,23 @@ cdef class Liquidation(Data):
         return Liquidation.to_dict_c(obj)
 
     @staticmethod
+    def to_pyo3_list(list liquidations) -> list:
+        """
+        Return pyo3 Rust liquidations converted from the given legacy Cython objects.
+
+        Parameters
+        ----------
+        liquidations : list[Liquidation]
+            The legacy Cython liquidations to convert.
+
+        Returns
+        -------
+        list[nautilus_pyo3.Liquidation]
+
+        """
+        return [x.to_pyo3() for x in liquidations]
+
+    @staticmethod
     def from_pyo3(pyo3_liquidation) -> Liquidation:
         """
         Return a legacy Cython liquidation converted from a pyo3 Rust object.
@@ -6531,6 +6548,23 @@ cdef class OpenInterest(Data):
 
         """
         return OpenInterest.to_dict_c(obj)
+
+    @staticmethod
+    def to_pyo3_list(list open_interest) -> list:
+        """
+        Return pyo3 Rust open-interest samples converted from the given legacy Cython objects.
+
+        Parameters
+        ----------
+        open_interest : list[OpenInterest]
+            The legacy Cython open-interest samples to convert.
+
+        Returns
+        -------
+        list[nautilus_pyo3.OpenInterest]
+
+        """
+        return [x.to_pyo3() for x in open_interest]
 
     @staticmethod
     def from_pyo3(pyo3_open_interest) -> OpenInterest:

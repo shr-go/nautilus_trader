@@ -350,7 +350,11 @@ class BinanceCommonDataClient(LiveMarketDataClient):
                 )
                 return
             interval_secs = command.data_type.metadata.get("interval_secs")
-            self._start_open_interest_polling(instrument_id, interval_secs)
+            self._start_open_interest_polling(
+                instrument_id,
+                interval_secs,
+                data_type=command.data_type,
+            )
         else:
             self._log.error(
                 f"Cannot subscribe to {command.data_type.type} (not implemented)",
@@ -384,7 +388,7 @@ class BinanceCommonDataClient(LiveMarketDataClient):
         elif command.data_type.type in (BinanceOpenInterest, OpenInterest):
             if not self._binance_account_type.is_futures:
                 return
-            self._stop_open_interest_polling(instrument_id)
+            self._stop_open_interest_polling(instrument_id, data_type=command.data_type)
         else:
             self._log.error(
                 f"Cannot unsubscribe from {command.data_type.type} (not implemented)",

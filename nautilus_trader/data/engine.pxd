@@ -80,7 +80,9 @@ from nautilus_trader.model.data cimport FundingRateUpdate
 from nautilus_trader.model.data cimport IndexPriceUpdate
 from nautilus_trader.model.data cimport InstrumentClose
 from nautilus_trader.model.data cimport InstrumentStatus
+from nautilus_trader.model.data cimport Liquidation
 from nautilus_trader.model.data cimport MarkPriceUpdate
+from nautilus_trader.model.data cimport OpenInterest
 from nautilus_trader.model.data cimport OptionGreeks
 from nautilus_trader.model.data cimport OrderBookDelta
 from nautilus_trader.model.data cimport OrderBookDeltas
@@ -294,6 +296,8 @@ cdef class DataEngine(Component):
     cpdef void _handle_custom_data(self, CustomData data, bint historical = *)
     cpdef void _handle_instrument_status(self, InstrumentStatus data, bint historical = *)
     cpdef void _handle_close_price(self, InstrumentClose data, bint historical = *)
+    cpdef void _handle_liquidation(self, Liquidation data, bint historical = *)
+    cpdef void _handle_open_interest(self, OpenInterest data, bint historical = *)
     cpdef void _handle_option_greeks(self, OptionGreeks option_greeks)
 
 # -- RESPONSE HANDLERS ----------------------------------------------------------------------------

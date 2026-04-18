@@ -33,7 +33,9 @@ from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import FundingRateUpdate
 from nautilus_trader.model.data import IndexPriceUpdate
 from nautilus_trader.model.data import InstrumentClose
+from nautilus_trader.model.data import Liquidation
 from nautilus_trader.model.data import MarkPriceUpdate
+from nautilus_trader.model.data import OpenInterest
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import OrderBookDepth10
@@ -68,6 +70,8 @@ NautilusRustDataType = Union[  # noqa: UP007 (mypy does not like pipe operators)
     nautilus_pyo3.MarkPriceUpdate,
     nautilus_pyo3.IndexPriceUpdate,
     nautilus_pyo3.InstrumentClose,
+    nautilus_pyo3.Liquidation,
+    nautilus_pyo3.OpenInterest,
 ]
 
 _ARROW_ENCODERS: dict[type, Callable] = {}
@@ -194,6 +198,16 @@ class ArrowSerializer:
                     pyo3_instrument_closes = InstrumentClose.to_pyo3_list(data)
                     batch_bytes = nautilus_pyo3.instrument_closes_to_arrow_record_batch_bytes(
                         pyo3_instrument_closes,
+                    )
+                elif data_cls == Liquidation:
+                    pyo3_liquidations = Liquidation.to_pyo3_list(data)
+                    batch_bytes = nautilus_pyo3.liquidations_to_arrow_record_batch_bytes(
+                        pyo3_liquidations,
+                    )
+                elif data_cls == OpenInterest:
+                    pyo3_open_interest = OpenInterest.to_pyo3_list(data)
+                    batch_bytes = nautilus_pyo3.open_interest_to_arrow_record_batch_bytes(
+                        pyo3_open_interest,
                     )
                 elif data_cls == OrderBookDepth10:
                     data = [
@@ -327,6 +341,8 @@ class ArrowSerializer:
             MarkPriceUpdate: None,
             IndexPriceUpdate: None,
             InstrumentClose: None,
+            Liquidation: None,
+            OpenInterest: None,
         }[data_cls]
 
         if Wrangler is None:
@@ -381,6 +397,8 @@ RUST_SERIALIZERS = {
     Bar,
     MarkPriceUpdate,
     IndexPriceUpdate,
+    Liquidation,
+    OpenInterest,
     # InstrumentClose,  # TODO: Not implemented yet
 }
 RUST_STR_SERIALIZERS = {s.__name__ for s in RUST_SERIALIZERS}

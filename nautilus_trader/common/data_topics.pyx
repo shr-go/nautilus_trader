@@ -49,6 +49,8 @@ cdef class TopicCache:
         self._topic_cache_index_prices = {}
         self._topic_cache_funding_rates = {}
         self._topic_cache_close_prices = {}
+        self._topic_cache_liquidations = {}
+        self._topic_cache_open_interest = {}
         self._topic_cache_snapshots = {}
         self._topic_cache_custom = {}
         self._topic_cache_custom_simple = {}
@@ -177,6 +179,24 @@ cdef class TopicCache:
 
         return topic
 
+    cpdef str get_liquidations_topic(self, InstrumentId instrument_id, bint historical = False):
+        cdef tuple key = (instrument_id, historical)
+        cdef str topic = self._topic_cache_liquidations.get(key)
+        if topic is None:
+            topic = f"{'historical.' if historical else ''}data.liquidations.{instrument_id.venue}.{instrument_id.symbol}"
+            self._topic_cache_liquidations[key] = topic
+
+        return topic
+
+    cpdef str get_open_interest_topic(self, InstrumentId instrument_id, bint historical = False):
+        cdef tuple key = (instrument_id, historical)
+        cdef str topic = self._topic_cache_open_interest.get(key)
+        if topic is None:
+            topic = f"{'historical.' if historical else ''}data.open_interest.{instrument_id.venue}.{instrument_id.symbol}"
+            self._topic_cache_open_interest[key] = topic
+
+        return topic
+
     cpdef str get_snapshots_topic(self, InstrumentId instrument_id, int interval_ms, bint historical = False):
         cdef tuple key = (instrument_id, interval_ms, historical)
         cdef str topic = self._topic_cache_snapshots.get(key)
@@ -270,6 +290,8 @@ cdef class TopicCache:
         self._topic_cache_index_prices.clear()
         self._topic_cache_funding_rates.clear()
         self._topic_cache_close_prices.clear()
+        self._topic_cache_liquidations.clear()
+        self._topic_cache_open_interest.clear()
         self._topic_cache_snapshots.clear()
         self._topic_cache_custom.clear()
         self._topic_cache_custom_simple.clear()

@@ -23,9 +23,11 @@ from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
 from nautilus_trader.adapters.binance.config import BinanceDataClientConfig
 from nautilus_trader.adapters.binance.factories import BinanceLiveDataClientFactory
 from nautilus_trader.adapters.binance.futures.data import BinanceFuturesDataClient
+from nautilus_trader.adapters.binance.futures.types import BinanceOpenInterest
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
+from nautilus_trader.model.data import DataType
 from nautilus_trader.test_kit.mocks.cache_database import MockCacheDatabase
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
@@ -85,6 +87,86 @@ async def test_oi_poll_task_restarts_after_cancel(
 
     # Cleanup
     data_client._stop_open_interest_polling(instrument_id)
+    await asyncio.sleep(0)
+    assert instrument_id not in data_client._oi_poll_tasks
+
+
+@pytest.mark.asyncio
+async def test_oi_poll_tracks_subscribed_data_types(
+    event_loop,
+    binance_http_client,
+    monkeypatch,
+):
+    """_start_open_interest_polling records every subscribed DataType so the
+    emit topic matches whatever metadata the subscriber used — notably
+    `interval_secs`."""
+    # Arrange
+    clock = LiveClock()
+    msgbus = MessageBus(trader_id=TestIdStubs.trader_id(), clock=clock)
+    cache = Cache(database=MockCacheDatabase())
+
+    data_client = BinanceLiveDataClientFactory.create(
+        loop=event_loop,
+        name="BINANCE",
+        config=BinanceDataClientConfig(
+            api_key="SOME_BINANCE_API_KEY",  # noqa: S106
+            api_secret="SOME_BINANCE_API_SECRET",  # noqa: S106
+            account_type=BinanceAccountType.USDT_FUTURES,
+        ),
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+    )
+    assert isinstance(data_client, BinanceFuturesDataClient)
+
+    # Use a parked poll loop so the real REST call is never made
+    monkeypatch.setattr(data_client, "_open_interest_poll_loop", _never_ending_poll_loop)
+
+    instrument_id = TestInstrumentProvider.btcusdt_binance().id
+
+    # Case A: subscribe with interval_secs → tracked data type carries it
+    dt_with_interval = DataType(
+        BinanceOpenInterest,
+        metadata={"instrument_id": instrument_id, "interval_secs": 10},
+    )
+    data_client._start_open_interest_polling(
+        instrument_id,
+        interval_secs=10,
+        data_type=dt_with_interval,
+    )
+    tracked = data_client._oi_subscribed_data_types.get(instrument_id)
+    assert tracked == [dt_with_interval]
+
+    # Case B: a second subscriber with different metadata is also tracked
+    dt_without_interval = DataType(
+        BinanceOpenInterest,
+        metadata={"instrument_id": instrument_id},
+    )
+    data_client._start_open_interest_polling(
+        instrument_id,
+        interval_secs=10,
+        data_type=dt_without_interval,
+    )
+    assert data_client._oi_subscribed_data_types[instrument_id] == [
+        dt_with_interval,
+        dt_without_interval,
+    ]
+
+    # Removing one subscriber keeps the other active
+    data_client._stop_open_interest_polling(
+        instrument_id,
+        data_type=dt_with_interval,
+    )
+    assert data_client._oi_subscribed_data_types[instrument_id] == [dt_without_interval]
+
+    # Removing the last subscriber tears down entirely
+    data_client._stop_open_interest_polling(
+        instrument_id,
+        data_type=dt_without_interval,
+    )
+    assert instrument_id not in data_client._oi_subscribed_data_types
+
+    # Let the done-callback fire before asserting the task dict is clean
     await asyncio.sleep(0)
     assert instrument_id not in data_client._oi_poll_tasks
 

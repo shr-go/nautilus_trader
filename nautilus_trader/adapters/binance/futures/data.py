@@ -131,6 +131,10 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
         # Open-interest REST polling state
         self._oi_poll_tasks: dict[InstrumentId, asyncio.Task] = {}
         self._oi_poll_default_secs: int = 5
+        # Track every `DataType` currently subscribed for each instrument so the
+        # poller can emit on exactly those topics — a subscription that includes
+        # `interval_secs` in its metadata must get samples on the same topic.
+        self._oi_subscribed_data_types: dict[InstrumentId, list[DataType]] = {}
 
     # -- WEBSOCKET HANDLERS ---------------------------------------------------------------------------------
 
@@ -221,7 +225,16 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
         self,
         instrument_id: InstrumentId,
         interval_secs: int | None = None,
+        data_type: DataType | None = None,
     ) -> None:
+        # Record every subscribed DataType so the poll loop publishes on the
+        # same topic the subscriber is listening on (custom-data topics are
+        # keyed on the full metadata including any `interval_secs`).
+        if data_type is not None:
+            subscribed = self._oi_subscribed_data_types.setdefault(instrument_id, [])
+            if data_type not in subscribed:
+                subscribed.append(data_type)
+
         # Only short-circuit when the existing task is still running. After a
         # disconnect or any natural completion the task stays in _tasks until
         # garbage-collected, so we must drop the stale entry here to let a
@@ -253,7 +266,23 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
 
         task.add_done_callback(_clear)
 
-    def _stop_open_interest_polling(self, instrument_id: InstrumentId) -> None:
+    def _stop_open_interest_polling(
+        self,
+        instrument_id: InstrumentId,
+        data_type: DataType | None = None,
+    ) -> None:
+        # Only tear down when the LAST subscriber for this instrument is gone.
+        # Removing a specific DataType keeps other active subscriptions alive.
+        if data_type is not None:
+            subscribed = self._oi_subscribed_data_types.get(instrument_id)
+            if subscribed is not None and data_type in subscribed:
+                subscribed.remove(data_type)
+                if subscribed:
+                    return
+                self._oi_subscribed_data_types.pop(instrument_id, None)
+        else:
+            self._oi_subscribed_data_types.pop(instrument_id, None)
+
         task = self._oi_poll_tasks.pop(instrument_id, None)
         if task is not None and not task.done():
             task.cancel()
@@ -287,11 +316,24 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
                     size_precision=instrument.size_precision,
                     ts_init=ts_init,
                 )
-                data_type = DataType(
-                    BinanceOpenInterest,
-                    metadata={"instrument_id": instrument_id},
-                )
-                self._handle_data(CustomData(data_type=data_type, data=binance_oi))
+                # Emit `BinanceOpenInterest` on every subscribed `DataType` so
+                # the topic matches whatever metadata the subscriber used (with
+                # or without `interval_secs`). Fall back to the bare
+                # instrument_id topic if no subscription metadata is tracked.
+                subscribed_types = self._oi_subscribed_data_types.get(instrument_id)
+                if subscribed_types:
+                    for dt in subscribed_types:
+                        self._handle_data(CustomData(data_type=dt, data=binance_oi))
+                else:
+                    self._handle_data(
+                        CustomData(
+                            data_type=DataType(
+                                BinanceOpenInterest,
+                                metadata={"instrument_id": instrument_id},
+                            ),
+                            data=binance_oi,
+                        ),
+                    )
                 self._handle_data(oi)
 
                 backoff = 1.0

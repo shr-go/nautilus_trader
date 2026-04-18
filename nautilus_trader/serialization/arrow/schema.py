@@ -25,7 +25,9 @@ from nautilus_trader.model.data import FundingRateUpdate
 from nautilus_trader.model.data import IndexPriceUpdate
 from nautilus_trader.model.data import InstrumentClose
 from nautilus_trader.model.data import InstrumentStatus
+from nautilus_trader.model.data import Liquidation
 from nautilus_trader.model.data import MarkPriceUpdate
+from nautilus_trader.model.data import OpenInterest
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDepth10
 from nautilus_trader.model.data import QuoteTick
@@ -93,6 +95,18 @@ NAUTILUS_ARROW_SCHEMA = {
         [
             pa.field(k, infer_dtype(v), False)
             for k, v in nautilus_pyo3.IndexPriceUpdate.get_fields().items()
+        ],
+    ),
+    Liquidation: pa.schema(
+        [
+            pa.field(k, infer_dtype(v), False)
+            for k, v in nautilus_pyo3.Liquidation.get_fields().items()
+        ],
+    ),
+    OpenInterest: pa.schema(
+        [
+            pa.field(k, infer_dtype(v), False)
+            for k, v in nautilus_pyo3.OpenInterest.get_fields().items()
         ],
     ),
     FundingRateUpdate: pa.schema(

@@ -142,7 +142,9 @@ from nautilus_trader.model.data cimport FundingRateUpdate
 from nautilus_trader.model.data cimport IndexPriceUpdate
 from nautilus_trader.model.data cimport InstrumentClose
 from nautilus_trader.model.data cimport InstrumentStatus
+from nautilus_trader.model.data cimport Liquidation
 from nautilus_trader.model.data cimport MarkPriceUpdate
+from nautilus_trader.model.data cimport OpenInterest
 from nautilus_trader.model.data cimport OptionGreeks
 from nautilus_trader.model.data cimport OrderBookDelta
 from nautilus_trader.model.data cimport OrderBookDeltas
@@ -2512,6 +2514,10 @@ cdef class DataEngine(Component):
             self._handle_instrument_status(data, historical)
         elif isinstance(data, InstrumentClose):
             self._handle_close_price(data, historical)
+        elif isinstance(data, Liquidation):
+            self._handle_liquidation(data, historical)
+        elif isinstance(data, OpenInterest):
+            self._handle_open_interest(data, historical)
         elif isinstance(data, OptionGreeks):
             self._handle_option_greeks(data)
         elif isinstance(data, CustomData):
@@ -2776,6 +2782,37 @@ cdef class DataEngine(Component):
 
     cpdef void _handle_close_price(self, InstrumentClose data, bint historical = False):
         self._msgbus.publish_c(topic=self._topic_cache.get_close_prices_topic(data.instrument_id, historical), msg=data)
+
+    cpdef void _handle_liquidation(self, Liquidation data, bint historical = False):
+        # Publish on the canonical topic for anyone subscribed via dedicated helpers,
+        # and on the custom-data topic that `subscribe_data(DataType(Liquidation, {...}))`
+        # registers with — that's the user-facing subscription path per the design plan.
+        self._msgbus.publish_c(
+            topic=self._topic_cache.get_liquidations_topic(data.instrument_id, historical),
+            msg=data,
+        )
+        self._msgbus.publish_c(
+            topic=self._topic_cache.get_custom_data_topic(
+                DataType(Liquidation, metadata={"instrument_id": data.instrument_id}),
+                data.instrument_id,
+                historical,
+            ),
+            msg=data,
+        )
+
+    cpdef void _handle_open_interest(self, OpenInterest data, bint historical = False):
+        self._msgbus.publish_c(
+            topic=self._topic_cache.get_open_interest_topic(data.instrument_id, historical),
+            msg=data,
+        )
+        self._msgbus.publish_c(
+            topic=self._topic_cache.get_custom_data_topic(
+                DataType(OpenInterest, metadata={"instrument_id": data.instrument_id}),
+                data.instrument_id,
+                historical,
+            ),
+            msg=data,
+        )
 
     cpdef void _handle_option_greeks(self, OptionGreeks option_greeks):
         self._msgbus.publish_c(

@@ -31,6 +31,8 @@ cdef class TopicCache:
     cdef dict[tuple[InstrumentId, bint], str] _topic_cache_index_prices
     cdef dict[tuple[InstrumentId, bint], str] _topic_cache_funding_rates
     cdef dict[tuple[InstrumentId, bint], str] _topic_cache_close_prices
+    cdef dict[tuple[InstrumentId, bint], str] _topic_cache_liquidations
+    cdef dict[tuple[InstrumentId, bint], str] _topic_cache_open_interest
     cdef dict[tuple[InstrumentId, int, bint], str] _topic_cache_snapshots
     cdef dict[tuple[DataType, InstrumentId, bint], str] _topic_cache_custom
     cdef dict[tuple[DataType, bint], str] _topic_cache_custom_simple
@@ -51,6 +53,8 @@ cdef class TopicCache:
     cpdef str get_index_prices_topic(self, InstrumentId instrument_id, bint historical = *)
     cpdef str get_funding_rates_topic(self, InstrumentId instrument_id, bint historical = *)
     cpdef str get_close_prices_topic(self, InstrumentId instrument_id, bint historical = *)
+    cpdef str get_liquidations_topic(self, InstrumentId instrument_id, bint historical = *)
+    cpdef str get_open_interest_topic(self, InstrumentId instrument_id, bint historical = *)
     cpdef str get_snapshots_topic(self, InstrumentId instrument_id, int interval_ms, bint historical = *)
     cpdef str get_custom_data_topic(self, DataType data_type, InstrumentId instrument_id = *, bint historical = *)
     cpdef str get_bars_topic(self, BarType bar_type, bint historical = *)
