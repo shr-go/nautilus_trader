@@ -1261,17 +1261,20 @@ impl DataEngine {
         let topic = switchboard::get_liquidation_topic(liq.instrument_id);
         msgbus::publish_any(topic, &liq);
 
-        // Default custom-data topic — matches what
-        // `DataActor::subscribe_data(DataType(Liquidation, {"instrument_id": X}))`
-        // registers on via `get_custom_topic(&data_type)`. Without this,
-        // Rust-side `subscribe_data` never fires.
+        // Default custom-data topic — `DataActor::subscribe_data(DataType(
+        // Liquidation, {"instrument_id": X}))` registers a
+        // `TypedHandler<CustomData>` on `get_custom_topic(&data_type)`, so
+        // the payload must be wrapped in a `CustomData` envelope or the
+        // handler's downcast fails silently.
         let data_type = DataType::new(
             stringify!(Liquidation),
             Some(Self::instrument_id_params(liq.instrument_id)),
             None,
         );
         let custom_topic = switchboard::get_custom_topic(&data_type);
-        msgbus::publish_any(custom_topic, &liq);
+        let custom =
+            nautilus_model::data::CustomData::new(std::sync::Arc::new(liq), data_type);
+        msgbus::publish_any(custom_topic, &custom);
     }
 
     fn handle_open_interest(&self, oi: OpenInterest) {
@@ -1279,14 +1282,16 @@ impl DataEngine {
         let topic = switchboard::get_open_interest_topic(oi.instrument_id);
         msgbus::publish_any(topic, &oi);
 
-        // Default custom-data topic (see handle_liquidation for rationale)
+        // Default custom-data topic — see `handle_liquidation` for rationale.
         let data_type = DataType::new(
             stringify!(OpenInterest),
             Some(Self::instrument_id_params(oi.instrument_id)),
             None,
         );
         let custom_topic = switchboard::get_custom_topic(&data_type);
-        msgbus::publish_any(custom_topic, &oi);
+        let custom =
+            nautilus_model::data::CustomData::new(std::sync::Arc::new(oi), data_type);
+        msgbus::publish_any(custom_topic, &custom);
     }
 
     fn handle_custom_data(&self, custom: &CustomData) {

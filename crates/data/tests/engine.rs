@@ -69,9 +69,9 @@ use nautilus_model::defi::{
 };
 use nautilus_model::{
     data::{
-        Bar, BarType, Data, DataType, FundingRateUpdate, IndexPriceUpdate, InstrumentStatus,
-        MarkPriceUpdate, OrderBookDeltas, OrderBookDeltas_API, OrderBookDepth10, QuoteTick,
-        TradeTick,
+        Bar, BarType, CustomData, Data, DataType, FundingRateUpdate, IndexPriceUpdate,
+        InstrumentStatus, Liquidation, MarkPriceUpdate, OpenInterest, OrderBookDeltas,
+        OrderBookDeltas_API, OrderBookDepth10, QuoteTick, TradeTick,
         option_chain::StrikeRange,
         stubs::{OrderBookDeltaTestBuilder, stub_delta, stub_deltas, stub_depth10},
     },
@@ -4975,4 +4975,96 @@ fn test_subscribe_option_chain_atm_relative_requests_forward_prices(
         quote_subs, 0,
         "No quote subscriptions before forward price bootstrap"
     );
+}
+
+/// A Rust actor using `subscribe_data(DataType(Liquidation, {"instrument_id": X}))`
+/// must receive events wrapped in a `CustomData` envelope — the actor's
+/// `TypedHandler<CustomData>` would silently drop raw `Liquidation` payloads
+/// on the same topic.
+#[rstest]
+fn test_process_liquidation_delivers_custom_data_on_custom_topic(
+    audusd_sim: CurrencyPair,
+    data_engine: Rc<RefCell<DataEngine>>,
+) {
+    use nautilus_core::Params;
+    use nautilus_model::{
+        enums::{OrderSide, OrderStatus},
+        types::Quantity,
+    };
+
+    let instrument_id = audusd_sim.id;
+
+    // Compose the exact DataType an actor would pass to `subscribe_data(...)`
+    let mut metadata = Params::new();
+    metadata.insert(
+        "instrument_id".to_string(),
+        serde_json::Value::String(instrument_id.to_string()),
+    );
+    let data_type = DataType::new(stringify!(Liquidation), Some(metadata), None);
+    let custom_topic = switchboard::get_custom_topic(&data_type);
+
+    let handler = msgbus::stubs::get_message_saving_handler::<CustomData>(None);
+    msgbus::subscribe_any(custom_topic.into(), handler.clone(), None);
+
+    let liq = Liquidation::new(
+        instrument_id,
+        OrderSide::Sell,
+        Quantity::from("0.500"),
+        Price::from("50000.10"),
+        OrderStatus::Filled,
+        UnixNanos::from(1),
+        UnixNanos::from(2),
+    );
+    data_engine.borrow_mut().process_data(Data::Liquidation(liq));
+
+    let messages = msgbus::stubs::get_saved_messages::<CustomData>(&handler);
+    assert_eq!(
+        messages.len(),
+        1,
+        "subscribe_data handler must receive CustomData-wrapped Liquidation",
+    );
+    let received = &messages[0];
+    assert_eq!(received.data_type, data_type);
+    let inner = received.data.as_any().downcast_ref::<Liquidation>().unwrap();
+    assert_eq!(*inner, liq);
+}
+
+#[rstest]
+fn test_process_open_interest_delivers_custom_data_on_custom_topic(
+    audusd_sim: CurrencyPair,
+    data_engine: Rc<RefCell<DataEngine>>,
+) {
+    use nautilus_core::Params;
+    use nautilus_model::types::Quantity;
+
+    let instrument_id = audusd_sim.id;
+
+    let mut metadata = Params::new();
+    metadata.insert(
+        "instrument_id".to_string(),
+        serde_json::Value::String(instrument_id.to_string()),
+    );
+    let data_type = DataType::new(stringify!(OpenInterest), Some(metadata), None);
+    let custom_topic = switchboard::get_custom_topic(&data_type);
+
+    let handler = msgbus::stubs::get_message_saving_handler::<CustomData>(None);
+    msgbus::subscribe_any(custom_topic.into(), handler.clone(), None);
+
+    let oi = OpenInterest::new(
+        instrument_id,
+        Quantity::from("12345.678"),
+        UnixNanos::from(1),
+        UnixNanos::from(2),
+    );
+    data_engine.borrow_mut().process_data(Data::OpenInterest(oi));
+
+    let messages = msgbus::stubs::get_saved_messages::<CustomData>(&handler);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].data_type, data_type);
+    let inner = messages[0]
+        .data
+        .as_any()
+        .downcast_ref::<OpenInterest>()
+        .unwrap();
+    assert_eq!(*inner, oi);
 }
