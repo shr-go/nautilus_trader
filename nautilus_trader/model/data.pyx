@@ -49,9 +49,12 @@ from nautilus_trader.core.rust.model cimport Data_t
 from nautilus_trader.core.rust.model cimport Data_t_Tag
 from nautilus_trader.core.rust.model cimport IndexPriceUpdate_t
 from nautilus_trader.core.rust.model cimport InstrumentCloseType
+from nautilus_trader.core.rust.model cimport Liquidation_t
 from nautilus_trader.core.rust.model cimport MarketStatusAction
 from nautilus_trader.core.rust.model cimport MarkPriceUpdate_t
+from nautilus_trader.core.rust.model cimport OpenInterest_t
 from nautilus_trader.core.rust.model cimport OrderSide
+from nautilus_trader.core.rust.model cimport OrderStatus
 from nautilus_trader.core.rust.model cimport Price_t
 from nautilus_trader.core.rust.model cimport PriceRaw
 from nautilus_trader.core.rust.model cimport PriceType
@@ -99,6 +102,14 @@ from nautilus_trader.core.rust.model cimport index_price_update_hash
 from nautilus_trader.core.rust.model cimport index_price_update_new
 from nautilus_trader.core.rust.model cimport index_price_update_to_cstr
 from nautilus_trader.core.rust.model cimport instrument_id_from_cstr
+from nautilus_trader.core.rust.model cimport liquidation_eq
+from nautilus_trader.core.rust.model cimport liquidation_hash
+from nautilus_trader.core.rust.model cimport liquidation_new
+from nautilus_trader.core.rust.model cimport liquidation_to_cstr
+from nautilus_trader.core.rust.model cimport open_interest_eq
+from nautilus_trader.core.rust.model cimport open_interest_hash
+from nautilus_trader.core.rust.model cimport open_interest_new
+from nautilus_trader.core.rust.model cimport open_interest_to_cstr
 from nautilus_trader.core.rust.model cimport mark_price_update_eq
 from nautilus_trader.core.rust.model cimport mark_price_update_hash
 from nautilus_trader.core.rust.model cimport mark_price_update_new
@@ -156,6 +167,8 @@ from nautilus_trader.model.functions cimport market_status_action_from_str
 from nautilus_trader.model.functions cimport market_status_action_to_str
 from nautilus_trader.model.functions cimport order_side_from_str
 from nautilus_trader.model.functions cimport order_side_to_str
+from nautilus_trader.model.functions cimport order_status_from_str
+from nautilus_trader.model.functions cimport order_status_to_str
 from nautilus_trader.model.functions cimport price_type_from_str
 from nautilus_trader.model.functions cimport price_type_to_str
 from nautilus_trader.model.identifiers cimport InstrumentId
@@ -6078,6 +6091,470 @@ cdef class IndexPriceUpdate(Data):
         return nautilus_pyo3.IndexPriceUpdate(
             nautilus_pyo3.InstrumentId.from_str(self.instrument_id.value),
             nautilus_pyo3.Price(float(self.value), self.value.precision),
+            self.ts_event,
+            self.ts_init,
+        )
+
+
+cdef class Liquidation(Data):
+    """
+    Represents a forced-liquidation (venue-initiated) order event.
+
+    Parameters
+    ----------
+    instrument_id : InstrumentId
+        The instrument ID for the liquidation order.
+    side : OrderSide
+        The side of the liquidation order.
+    quantity : Quantity
+        The liquidation order quantity.
+    price : Price
+        The liquidation order price.
+    order_status : OrderStatus
+        The order status at the time of the event.
+    ts_event : uint64_t
+        UNIX timestamp (nanoseconds) when the liquidation occurred at the venue.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the data object was initialized.
+
+    """
+
+    def __init__(
+        self,
+        InstrumentId instrument_id not None,
+        OrderSide side,
+        Quantity quantity not None,
+        Price price not None,
+        OrderStatus order_status,
+        uint64_t ts_event,
+        uint64_t ts_init,
+    ) -> None:
+        self._mem = liquidation_new(
+            instrument_id._mem,
+            side,
+            quantity._mem,
+            price._mem,
+            order_status,
+            ts_event,
+            ts_init,
+        )
+
+    def __eq__(self, Liquidation other) -> bool:
+        if other is None:
+            return False
+        return liquidation_eq(&self._mem, &other._mem)
+
+    def __hash__(self) -> int:
+        return liquidation_hash(&self._mem)
+
+    def __str__(self) -> str:
+        return self.to_str()
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.to_str()})"
+
+    cdef str to_str(self):
+        return cstr_to_pystr(liquidation_to_cstr(&self._mem))
+
+    @property
+    def instrument_id(self) -> InstrumentId:
+        """
+        Return the instrument ID.
+
+        Returns
+        -------
+        InstrumentId
+
+        """
+        return InstrumentId.from_mem_c(self._mem.instrument_id)
+
+    @property
+    def side(self) -> OrderSide:
+        """
+        Return the side of the liquidation order.
+
+        Returns
+        -------
+        OrderSide
+
+        """
+        return <OrderSide>self._mem.side
+
+    @property
+    def quantity(self) -> Quantity:
+        """
+        Return the liquidation order quantity.
+
+        Returns
+        -------
+        Quantity
+
+        """
+        return Quantity.from_raw_c(self._mem.quantity.raw, self._mem.quantity.precision)
+
+    @property
+    def price(self) -> Price:
+        """
+        Return the liquidation order price.
+
+        Returns
+        -------
+        Price
+
+        """
+        return Price.from_raw_c(self._mem.price.raw, self._mem.price.precision)
+
+    @property
+    def order_status(self) -> OrderStatus:
+        """
+        Return the order status at the time of the event.
+
+        Returns
+        -------
+        OrderStatus
+
+        """
+        return <OrderStatus>self._mem.order_status
+
+    @property
+    def ts_event(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the liquidation event occurred.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._mem.ts_event
+
+    @property
+    def ts_init(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the object was initialized.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._mem.ts_init
+
+    @staticmethod
+    cdef Liquidation from_dict_c(dict values):
+        Condition.not_none(values, "values")
+        return Liquidation(
+            instrument_id=InstrumentId.from_str_c(values["instrument_id"]),
+            side=order_side_from_str(values["side"]),
+            quantity=Quantity.from_str_c(values["quantity"]),
+            price=Price.from_str_c(values["price"]),
+            order_status=order_status_from_str(values["order_status"]),
+            ts_event=values["ts_event"],
+            ts_init=values["ts_init"],
+        )
+
+    @staticmethod
+    cdef dict to_dict_c(Liquidation obj):
+        Condition.not_none(obj, "obj")
+        return {
+            "type": type(obj).__name__,
+            "instrument_id": str(obj.instrument_id),
+            "side": order_side_to_str(obj._mem.side),
+            "quantity": str(obj.quantity),
+            "price": str(obj.price),
+            "order_status": order_status_to_str(obj._mem.order_status),
+            "ts_event": obj.ts_event,
+            "ts_init": obj.ts_init,
+        }
+
+    @staticmethod
+    def from_dict(dict values) -> Liquidation:
+        """
+        Return a liquidation from the given dict values.
+
+        Parameters
+        ----------
+        values : dict[str, object]
+            The values for initialization.
+
+        Returns
+        -------
+        Liquidation
+
+        """
+        return Liquidation.from_dict_c(values)
+
+    @staticmethod
+    def to_dict(Liquidation obj):
+        """
+        Return a dictionary representation of this object.
+
+        Returns
+        -------
+        dict[str, object]
+
+        """
+        return Liquidation.to_dict_c(obj)
+
+    @staticmethod
+    def from_pyo3(pyo3_liquidation) -> Liquidation:
+        """
+        Return a legacy Cython liquidation converted from a pyo3 Rust object.
+
+        Parameters
+        ----------
+        pyo3_liquidation : nautilus_pyo3.Liquidation
+            The pyo3 Rust liquidation to convert from.
+
+        Returns
+        -------
+        Liquidation
+
+        """
+        return Liquidation(
+            instrument_id=InstrumentId.from_str(pyo3_liquidation.instrument_id.value),
+            side=order_side_from_str(str(pyo3_liquidation.side).split(".")[-1]),
+            quantity=Quantity(float(pyo3_liquidation.quantity), pyo3_liquidation.quantity.precision),
+            price=Price(float(pyo3_liquidation.price), pyo3_liquidation.price.precision),
+            order_status=order_status_from_str(str(pyo3_liquidation.order_status).split(".")[-1]),
+            ts_event=pyo3_liquidation.ts_event,
+            ts_init=pyo3_liquidation.ts_init,
+        )
+
+    @staticmethod
+    def from_pyo3_list(list pyo3_liquidations) -> list:
+        """
+        Return Cython liquidations converted from the given pyo3 Rust objects.
+
+        Parameters
+        ----------
+        pyo3_liquidations : list[nautilus_pyo3.Liquidation]
+            The pyo3 Rust liquidations.
+
+        Returns
+        -------
+        list[Liquidation]
+
+        """
+        return [Liquidation.from_pyo3(x) for x in pyo3_liquidations]
+
+    def to_pyo3(self) -> nautilus_pyo3.Liquidation:
+        """
+        Return a pyo3 object from this legacy Cython instance.
+
+        Returns
+        -------
+        nautilus_pyo3.Liquidation
+
+        """
+        return nautilus_pyo3.Liquidation(
+            nautilus_pyo3.InstrumentId.from_str(self.instrument_id.value),
+            nautilus_pyo3.OrderSide(order_side_to_str(self._mem.side)),
+            nautilus_pyo3.Quantity(float(self.quantity), self.quantity.precision),
+            nautilus_pyo3.Price(float(self.price), self.price.precision),
+            nautilus_pyo3.OrderStatus(order_status_to_str(self._mem.order_status)),
+            self.ts_event,
+            self.ts_init,
+        )
+
+
+cdef class OpenInterest(Data):
+    """
+    Represents a sample of the open interest for a derivatives instrument.
+
+    Parameters
+    ----------
+    instrument_id : InstrumentId
+        The instrument ID for the open interest sample.
+    value : Quantity
+        The open interest value (contract-denominated).
+    ts_event : uint64_t
+        UNIX timestamp (nanoseconds) when the sample was generated at the venue.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the data object was initialized.
+
+    """
+
+    def __init__(
+        self,
+        InstrumentId instrument_id not None,
+        Quantity value not None,
+        uint64_t ts_event,
+        uint64_t ts_init,
+    ) -> None:
+        self._mem = open_interest_new(
+            instrument_id._mem,
+            value._mem,
+            ts_event,
+            ts_init,
+        )
+
+    def __eq__(self, OpenInterest other) -> bool:
+        if other is None:
+            return False
+        return open_interest_eq(&self._mem, &other._mem)
+
+    def __hash__(self) -> int:
+        return open_interest_hash(&self._mem)
+
+    def __str__(self) -> str:
+        return self.to_str()
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.to_str()})"
+
+    cdef str to_str(self):
+        return cstr_to_pystr(open_interest_to_cstr(&self._mem))
+
+    @property
+    def instrument_id(self) -> InstrumentId:
+        """
+        Return the instrument ID.
+
+        Returns
+        -------
+        InstrumentId
+
+        """
+        return InstrumentId.from_mem_c(self._mem.instrument_id)
+
+    @property
+    def value(self) -> Quantity:
+        """
+        Return the open interest value.
+
+        Returns
+        -------
+        Quantity
+
+        """
+        return Quantity.from_raw_c(self._mem.value.raw, self._mem.value.precision)
+
+    @property
+    def ts_event(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the sample was generated.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._mem.ts_event
+
+    @property
+    def ts_init(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the object was initialized.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._mem.ts_init
+
+    @staticmethod
+    cdef OpenInterest from_dict_c(dict values):
+        Condition.not_none(values, "values")
+        return OpenInterest(
+            instrument_id=InstrumentId.from_str_c(values["instrument_id"]),
+            value=Quantity.from_str_c(values["value"]),
+            ts_event=values["ts_event"],
+            ts_init=values["ts_init"],
+        )
+
+    @staticmethod
+    cdef dict to_dict_c(OpenInterest obj):
+        Condition.not_none(obj, "obj")
+        return {
+            "type": type(obj).__name__,
+            "instrument_id": str(obj.instrument_id),
+            "value": str(obj.value),
+            "ts_event": obj.ts_event,
+            "ts_init": obj.ts_init,
+        }
+
+    @staticmethod
+    def from_dict(dict values) -> OpenInterest:
+        """
+        Return an open-interest sample from the given dict values.
+
+        Parameters
+        ----------
+        values : dict[str, object]
+            The values for initialization.
+
+        Returns
+        -------
+        OpenInterest
+
+        """
+        return OpenInterest.from_dict_c(values)
+
+    @staticmethod
+    def to_dict(OpenInterest obj):
+        """
+        Return a dictionary representation of this object.
+
+        Returns
+        -------
+        dict[str, object]
+
+        """
+        return OpenInterest.to_dict_c(obj)
+
+    @staticmethod
+    def from_pyo3(pyo3_open_interest) -> OpenInterest:
+        """
+        Return a legacy Cython open-interest sample converted from a pyo3 Rust object.
+
+        Parameters
+        ----------
+        pyo3_open_interest : nautilus_pyo3.OpenInterest
+            The pyo3 Rust open-interest sample.
+
+        Returns
+        -------
+        OpenInterest
+
+        """
+        return OpenInterest(
+            instrument_id=InstrumentId.from_str(pyo3_open_interest.instrument_id.value),
+            value=Quantity(float(pyo3_open_interest.value), pyo3_open_interest.value.precision),
+            ts_event=pyo3_open_interest.ts_event,
+            ts_init=pyo3_open_interest.ts_init,
+        )
+
+    @staticmethod
+    def from_pyo3_list(list pyo3_open_interest) -> list:
+        """
+        Return Cython open-interest samples converted from the given pyo3 Rust objects.
+
+        Parameters
+        ----------
+        pyo3_open_interest : list[nautilus_pyo3.OpenInterest]
+            The pyo3 Rust open-interest samples.
+
+        Returns
+        -------
+        list[OpenInterest]
+
+        """
+        return [OpenInterest.from_pyo3(x) for x in pyo3_open_interest]
+
+    def to_pyo3(self) -> nautilus_pyo3.OpenInterest:
+        """
+        Return a pyo3 object from this legacy Cython instance.
+
+        Returns
+        -------
+        nautilus_pyo3.OpenInterest
+
+        """
+        return nautilus_pyo3.OpenInterest(
+            nautilus_pyo3.InstrumentId.from_str(self.instrument_id.value),
+            nautilus_pyo3.Quantity(float(self.value), self.value.precision),
             self.ts_event,
             self.ts_init,
         )

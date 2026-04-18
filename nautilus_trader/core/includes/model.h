@@ -1456,7 +1456,7 @@ typedef struct InstrumentClose_t {
  * Venue-specific fields (time-in-force, order type, accumulated fill quantity, etc.)
  * live on adapter-specific types.
  */
-typedef struct Liquidation {
+typedef struct Liquidation_t {
     /**
      * The instrument ID for the liquidation order.
      */
@@ -1485,12 +1485,12 @@ typedef struct Liquidation {
      * UNIX timestamp (nanoseconds) when the instance was created.
      */
     uint64_t ts_init;
-} Liquidation;
+} Liquidation_t;
 
 /**
  * Represents a sample of the open interest for a derivatives instrument at a venue.
  */
-typedef struct OpenInterest {
+typedef struct OpenInterest_t {
     /**
      * The instrument ID for the open interest sample.
      */
@@ -1507,7 +1507,7 @@ typedef struct OpenInterest {
      * UNIX timestamp (nanoseconds) when the instance was created.
      */
     uint64_t ts_init;
-} OpenInterest;
+} OpenInterest_t;
 
 /**
  * A C-compatible representation of [`Data`] for FFI.
@@ -1560,10 +1560,10 @@ typedef struct Data_t {
             struct InstrumentClose_t instrument_close;
         };
         struct {
-            struct Liquidation liquidation;
+            struct Liquidation_t liquidation;
         };
         struct {
-            struct OpenInterest open_interest;
+            struct OpenInterest_t open_interest;
         };
     };
 } Data_t;
@@ -2270,30 +2270,30 @@ const uint32_t *orderbook_depth10_bid_counts_array(const struct OrderBookDepth10
 
 const uint32_t *orderbook_depth10_ask_counts_array(const struct OrderBookDepth10_t *depth);
 
-struct Liquidation liquidation_new(struct InstrumentId_t instrument_id,
-                                   enum OrderSide side,
-                                   struct Quantity_t quantity,
-                                   struct Price_t price,
-                                   enum OrderStatus order_status,
-                                   uint64_t ts_event,
-                                   uint64_t ts_init);
+struct Liquidation_t liquidation_new(struct InstrumentId_t instrument_id,
+                                     enum OrderSide side,
+                                     struct Quantity_t quantity,
+                                     struct Price_t price,
+                                     enum OrderStatus order_status,
+                                     uint64_t ts_event,
+                                     uint64_t ts_init);
 
-uint8_t liquidation_eq(const struct Liquidation *lhs, const struct Liquidation *rhs);
+uint8_t liquidation_eq(const struct Liquidation_t *lhs, const struct Liquidation_t *rhs);
 
-uint64_t liquidation_hash(const struct Liquidation *value);
+uint64_t liquidation_hash(const struct Liquidation_t *value);
 
-const char *liquidation_to_cstr(const struct Liquidation *value);
+const char *liquidation_to_cstr(const struct Liquidation_t *value);
 
-struct OpenInterest open_interest_new(struct InstrumentId_t instrument_id,
-                                      struct Quantity_t value,
-                                      uint64_t ts_event,
-                                      uint64_t ts_init);
+struct OpenInterest_t open_interest_new(struct InstrumentId_t instrument_id,
+                                        struct Quantity_t value,
+                                        uint64_t ts_event,
+                                        uint64_t ts_init);
 
-uint8_t open_interest_eq(const struct OpenInterest *lhs, const struct OpenInterest *rhs);
+uint8_t open_interest_eq(const struct OpenInterest_t *lhs, const struct OpenInterest_t *rhs);
 
-uint64_t open_interest_hash(const struct OpenInterest *value);
+uint64_t open_interest_hash(const struct OpenInterest_t *value);
 
-const char *open_interest_to_cstr(const struct OpenInterest *value);
+const char *open_interest_to_cstr(const struct OpenInterest_t *value);
 
 struct BookOrder_t book_order_new(enum OrderSide order_side,
                                   struct Price_t price,

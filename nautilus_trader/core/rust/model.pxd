@@ -805,7 +805,7 @@ cdef extern from "../includes/model.h":
     # The canonical event captures just the information that is meaningful across venues.
     # Venue-specific fields (time-in-force, order type, accumulated fill quantity, etc.)
     # live on adapter-specific types.
-    cdef struct Liquidation:
+    cdef struct Liquidation_t:
         # The instrument ID for the liquidation order.
         InstrumentId_t instrument_id;
         # The side of the liquidation order (the side being liquidated out of).
@@ -822,7 +822,7 @@ cdef extern from "../includes/model.h":
         uint64_t ts_init;
 
     # Represents a sample of the open interest for a derivatives instrument at a venue.
-    cdef struct OpenInterest:
+    cdef struct OpenInterest_t:
         # The instrument ID for the open interest sample.
         InstrumentId_t instrument_id;
         # The open interest value (contract-denominated quantity).
@@ -860,8 +860,8 @@ cdef extern from "../includes/model.h":
         MarkPriceUpdate_t mark_price_update;
         IndexPriceUpdate_t index_price_update;
         InstrumentClose_t instrument_close;
-        Liquidation liquidation;
-        OpenInterest open_interest;
+        Liquidation_t liquidation;
+        OpenInterest_t open_interest;
 
     # Represents a valid trader ID.
     cdef struct TraderId_t:
@@ -1338,30 +1338,30 @@ cdef extern from "../includes/model.h":
 
     const uint32_t *orderbook_depth10_ask_counts_array(const OrderBookDepth10_t *depth);
 
-    Liquidation liquidation_new(InstrumentId_t instrument_id,
-                                OrderSide side,
-                                Quantity_t quantity,
-                                Price_t price,
-                                OrderStatus order_status,
-                                uint64_t ts_event,
-                                uint64_t ts_init);
+    Liquidation_t liquidation_new(InstrumentId_t instrument_id,
+                                  OrderSide side,
+                                  Quantity_t quantity,
+                                  Price_t price,
+                                  OrderStatus order_status,
+                                  uint64_t ts_event,
+                                  uint64_t ts_init);
 
-    uint8_t liquidation_eq(const Liquidation *lhs, const Liquidation *rhs);
+    uint8_t liquidation_eq(const Liquidation_t *lhs, const Liquidation_t *rhs);
 
-    uint64_t liquidation_hash(const Liquidation *value);
+    uint64_t liquidation_hash(const Liquidation_t *value);
 
-    const char *liquidation_to_cstr(const Liquidation *value);
+    const char *liquidation_to_cstr(const Liquidation_t *value);
 
-    OpenInterest open_interest_new(InstrumentId_t instrument_id,
-                                   Quantity_t value,
-                                   uint64_t ts_event,
-                                   uint64_t ts_init);
+    OpenInterest_t open_interest_new(InstrumentId_t instrument_id,
+                                     Quantity_t value,
+                                     uint64_t ts_event,
+                                     uint64_t ts_init);
 
-    uint8_t open_interest_eq(const OpenInterest *lhs, const OpenInterest *rhs);
+    uint8_t open_interest_eq(const OpenInterest_t *lhs, const OpenInterest_t *rhs);
 
-    uint64_t open_interest_hash(const OpenInterest *value);
+    uint64_t open_interest_hash(const OpenInterest_t *value);
 
-    const char *open_interest_to_cstr(const OpenInterest *value);
+    const char *open_interest_to_cstr(const OpenInterest_t *value);
 
     BookOrder_t book_order_new(OrderSide order_side,
                                Price_t price,
