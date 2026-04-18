@@ -1531,6 +1531,49 @@ fn test_subscribe_liquidations_delivers_canonical_event_to_actor(
 }
 
 #[rstest]
+fn test_subscribe_liquidations_respects_not_running(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    trader_id: TraderId,
+    audusd_sim: CurrencyPair,
+) {
+    use nautilus_model::{
+        enums::{OrderSide, OrderStatus},
+        types::Quantity,
+    };
+
+    // Regression guard for the actor-level not_running check. A stopped actor
+    // must NOT receive `on_liquidation` invocations even though the handler
+    // is still registered on the msgbus.
+    let actor_id = register_data_actor(clock, cache, trader_id);
+    let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
+    actor.start().unwrap();
+    actor.subscribe_liquidations(audusd_sim.id, None, None);
+
+    // Stop the actor BEFORE publishing — handle_liquidation's not_running
+    // check must short-circuit before on_liquidation is called.
+    actor.stop().unwrap();
+
+    let topic = msgbus::switchboard::get_liquidation_topic(audusd_sim.id);
+    let liq = Liquidation::new(
+        audusd_sim.id,
+        OrderSide::Sell,
+        Quantity::from("0.500"),
+        Price::from("1.00000"),
+        OrderStatus::Filled,
+        UnixNanos::from(1),
+        UnixNanos::from(2),
+    );
+    msgbus::publish_any(topic, &liq);
+
+    assert_eq!(
+        actor.received_liquidations.len(),
+        0,
+        "stopped actor must not receive liquidation events",
+    );
+}
+
+#[rstest]
 fn test_subscribe_open_interest_delivers_canonical_event_to_actor(
     clock: Rc<RefCell<TestClock>>,
     cache: Rc<RefCell<Cache>>,
@@ -1560,6 +1603,39 @@ fn test_subscribe_open_interest_delivers_canonical_event_to_actor(
     actor.unsubscribe_open_interest(audusd_sim.id, None, None);
     msgbus::publish_any(topic, &oi);
     assert_eq!(actor.received_open_interest.len(), 1);
+}
+
+#[rstest]
+fn test_subscribe_open_interest_respects_not_running(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    trader_id: TraderId,
+    audusd_sim: CurrencyPair,
+) {
+    use nautilus_model::types::Quantity;
+
+    // See `test_subscribe_liquidations_respects_not_running` — same guard
+    // for the OpenInterest dispatch path.
+    let actor_id = register_data_actor(clock, cache, trader_id);
+    let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
+    actor.start().unwrap();
+    actor.subscribe_open_interest(audusd_sim.id, None, None);
+    actor.stop().unwrap();
+
+    let topic = msgbus::switchboard::get_open_interest_topic(audusd_sim.id);
+    let oi = OpenInterest::new(
+        audusd_sim.id,
+        Quantity::from("12345.678"),
+        UnixNanos::from(1),
+        UnixNanos::from(2),
+    );
+    msgbus::publish_any(topic, &oi);
+
+    assert_eq!(
+        actor.received_open_interest.len(),
+        0,
+        "stopped actor must not receive open-interest events",
+    );
 }
 
 #[rstest]

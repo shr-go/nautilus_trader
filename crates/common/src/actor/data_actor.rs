@@ -771,6 +771,34 @@ pub trait DataActor:
         }
     }
 
+    /// Handles a received liquidation event.
+    fn handle_liquidation(&mut self, liquidation: &Liquidation) {
+        log_received(&liquidation);
+
+        if self.not_running() {
+            log_not_running(&liquidation);
+            return;
+        }
+
+        if let Err(e) = self.on_liquidation(liquidation) {
+            log_error(&e);
+        }
+    }
+
+    /// Handles a received open-interest sample.
+    fn handle_open_interest(&mut self, open_interest: &OpenInterest) {
+        log_received(&open_interest);
+
+        if self.not_running() {
+            log_not_running(&open_interest);
+            return;
+        }
+
+        if let Err(e) = self.on_open_interest(open_interest) {
+            log_error(&e);
+        }
+    }
+
     /// Handles a received option greeks update.
     fn handle_option_greeks(&mut self, greeks: &OptionGreeks) {
         log_received(&greeks);
@@ -1281,10 +1309,9 @@ pub trait DataActor:
 
     /// Subscribe to streaming [`Liquidation`] data for the `instrument_id`.
     ///
-    /// Events are dispatched via `on_data` as raw `Liquidation`-carrying
-    /// `CustomData` wrappers are not used here; the handler receives the
-    /// canonical type directly. See `DataActorCore::subscribe_liquidations`
-    /// for the stream-activation path.
+    /// Events flow through `handle_liquidation`, which applies the standard
+    /// `not_running` / `log_received` checks before dispatching to
+    /// `on_liquidation`.
     fn subscribe_liquidations(
         &mut self,
         instrument_id: InstrumentId,
@@ -1295,16 +1322,14 @@ pub trait DataActor:
     {
         let actor_id = self.actor_id().inner();
         let handler = ShareableMessageHandler::from_typed(move |liq: &Liquidation| {
-            if let Some(mut actor) = try_get_actor_unchecked::<Self>(&actor_id) {
-                if let Err(e) = actor.on_liquidation(liq) {
-                    log::error!("Error in on_liquidation for actor {actor_id}: {e}");
-                }
-            }
+            get_actor_unchecked::<Self>(&actor_id).handle_liquidation(liq);
         });
         DataActorCore::subscribe_liquidations(self, handler, instrument_id, client_id, params);
     }
 
     /// Subscribe to streaming [`OpenInterest`] data for the `instrument_id`.
+    ///
+    /// See `subscribe_liquidations` — this mirrors the same lifecycle flow.
     fn subscribe_open_interest(
         &mut self,
         instrument_id: InstrumentId,
@@ -1315,11 +1340,7 @@ pub trait DataActor:
     {
         let actor_id = self.actor_id().inner();
         let handler = ShareableMessageHandler::from_typed(move |oi: &OpenInterest| {
-            if let Some(mut actor) = try_get_actor_unchecked::<Self>(&actor_id) {
-                if let Err(e) = actor.on_open_interest(oi) {
-                    log::error!("Error in on_open_interest for actor {actor_id}: {e}");
-                }
-            }
+            get_actor_unchecked::<Self>(&actor_id).handle_open_interest(oi);
         });
         DataActorCore::subscribe_open_interest(self, handler, instrument_id, client_id, params);
     }

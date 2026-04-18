@@ -31,10 +31,11 @@ use nautilus_common::{
         data::{
             BarsResponse, DataResponse, InstrumentResponse, InstrumentsResponse, RequestBars,
             RequestInstrument, RequestInstruments, RequestTrades, SubscribeBars,
-            SubscribeBookDeltas, SubscribeFundingRates, SubscribeIndexPrices, SubscribeInstrument,
-            SubscribeInstruments, SubscribeMarkPrices, SubscribeQuotes, SubscribeTrades,
-            TradesResponse, UnsubscribeBars, UnsubscribeBookDeltas, UnsubscribeFundingRates,
-            UnsubscribeIndexPrices, UnsubscribeMarkPrices, UnsubscribeQuotes, UnsubscribeTrades,
+            SubscribeBookDeltas, SubscribeCustomData, SubscribeFundingRates, SubscribeIndexPrices,
+            SubscribeInstrument, SubscribeInstruments, SubscribeMarkPrices, SubscribeQuotes,
+            SubscribeTrades, TradesResponse, UnsubscribeBars, UnsubscribeBookDeltas,
+            UnsubscribeCustomData, UnsubscribeFundingRates, UnsubscribeIndexPrices,
+            UnsubscribeMarkPrices, UnsubscribeQuotes, UnsubscribeTrades,
             subscribe::SubscribeInstrumentStatus, unsubscribe::UnsubscribeInstrumentStatus,
         },
     },
@@ -1130,6 +1131,78 @@ impl DataClient for BinanceFuturesDataClient {
 
     fn is_disconnected(&self) -> bool {
         !self.is_connected()
+    }
+
+    fn subscribe(&mut self, cmd: SubscribeCustomData) -> anyhow::Result<()> {
+        // Dispatch custom-data subscribes to venue-specific streams when the
+        // `data_type.type_name` matches one the adapter knows how to source.
+        // For canonical `Liquidation` subscriptions this activates the
+        // per-symbol `@forceOrder` WS stream (the stream the Python adapter
+        // also routes on). `OpenInterest` REST polling in the Rust adapter
+        // remains deferred — Phase B scope note.
+        match cmd.data_type.type_name() {
+            "Liquidation" => {
+                let Some(instrument_id) = cmd.data_type.instrument_id() else {
+                    log::warn!(
+                        "subscribe(SubscribeCustomData) for Liquidation missing instrument_id",
+                    );
+                    return Ok(());
+                };
+                let ws = self.ws_client.clone();
+                let stream = format!(
+                    "{}@forceOrder",
+                    format_binance_stream_symbol(&instrument_id)
+                );
+                self.spawn_ws(
+                    async move {
+                        ws.subscribe(vec![stream])
+                            .await
+                            .context("force-order subscription")
+                    },
+                    "force-order subscription",
+                );
+                Ok(())
+            }
+            other => {
+                log::debug!(
+                    "subscribe(SubscribeCustomData) not implemented for `{other}`",
+                );
+                Ok(())
+            }
+        }
+    }
+
+    fn unsubscribe(&mut self, cmd: &UnsubscribeCustomData) -> anyhow::Result<()> {
+        match cmd.data_type.type_name() {
+            "Liquidation" => {
+                let Some(instrument_id) = cmd.data_type.instrument_id() else {
+                    log::warn!(
+                        "unsubscribe(UnsubscribeCustomData) for Liquidation missing instrument_id",
+                    );
+                    return Ok(());
+                };
+                let ws = self.ws_client.clone();
+                let stream = format!(
+                    "{}@forceOrder",
+                    format_binance_stream_symbol(&instrument_id)
+                );
+                self.spawn_ws(
+                    async move {
+                        ws.unsubscribe(vec![stream])
+                            .await
+                            .context("force-order unsubscription")
+                    },
+                    "force-order unsubscription",
+                );
+                Ok(())
+            }
+            other => {
+                log::debug!(
+                    "unsubscribe(UnsubscribeCustomData) not implemented for `{other}`",
+                );
+                Ok(())
+            }
+        }
     }
 
     fn subscribe_instruments(&mut self, _cmd: SubscribeInstruments) -> anyhow::Result<()> {

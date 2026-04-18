@@ -139,6 +139,28 @@ async fn handle_ws_connection(mut socket: WebSocket) {
                                 let _ = socket
                                     .send(Message::Text(mark_price.to_string().into()))
                                     .await;
+                            } else if stream.contains("@forceOrder") {
+                                let force_order = json!({
+                                    "e": "forceOrder",
+                                    "E": 1700000000000_i64,
+                                    "o": {
+                                        "s": "BTCUSDT",
+                                        "S": "SELL",
+                                        "o": "LIMIT",
+                                        "f": "IOC",
+                                        "q": "0.014",
+                                        "p": "50000.00",
+                                        "ap": "50000.12",
+                                        "X": "FILLED",
+                                        "l": "0.014",
+                                        "z": "0.014",
+                                        "T": 1700000000000_i64
+                                    }
+                                });
+                                tokio::time::sleep(Duration::from_millis(50)).await;
+                                let _ = socket
+                                    .send(Message::Text(force_order.to_string().into()))
+                                    .await;
                             }
                         }
                     }
@@ -496,6 +518,67 @@ async fn test_subscribe_mark_prices() {
     );
 
     client.subscribe_mark_prices(cmd).unwrap();
+
+    wait_until_async(
+        || {
+            let found = rx.try_recv().is_ok_and(|e| matches!(e, DataEvent::Data(_)));
+            async move { found }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_subscribe_custom_data_liquidation_activates_force_order_stream() {
+    // Proves the Rust Binance adapter activates the `@forceOrder` WS stream
+    // when a `SubscribeCustomData` for `DataType(Liquidation, {...})` arrives
+    // — which is the command a Rust actor dispatches via
+    // `DataActor::subscribe_liquidations`. Without this override the subscribe
+    // would fall back to the default `log_not_implemented`, leaving the
+    // actor's handler permanently starved.
+    use nautilus_common::messages::data::SubscribeCustomData;
+    use nautilus_core::Params;
+    use nautilus_model::data::DataType;
+
+    let addr = start_data_test_server().await;
+    let base_url_http = format!("http://{addr}");
+    let base_url_ws = format!("ws://{addr}/ws");
+
+    let (mut client, mut rx) = create_test_data_client(base_url_http, base_url_ws);
+
+    client.connect().await.unwrap();
+    wait_until_async(
+        || {
+            let found = rx
+                .try_recv()
+                .is_ok_and(|e| matches!(e, DataEvent::Instrument(_)));
+            async move { found }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+    while rx.try_recv().is_ok() {}
+
+    let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+    let mut metadata = Params::new();
+    metadata.insert(
+        "instrument_id".to_string(),
+        serde_json::Value::String(instrument_id.to_string()),
+    );
+    let data_type = DataType::new(stringify!(Liquidation), Some(metadata), None);
+    let cmd = SubscribeCustomData {
+        data_type,
+        client_id: Some(ClientId::from("BINANCE")),
+        venue: Some(instrument_id.venue),
+        command_id: nautilus_core::UUID4::new(),
+        ts_init: UnixNanos::default(),
+        correlation_id: None,
+        params: None,
+    };
+
+    client.subscribe(cmd).unwrap();
 
     wait_until_async(
         || {
