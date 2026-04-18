@@ -75,7 +75,7 @@ use crate::{
             messages::BinanceFuturesWsStreamsMessage,
             parse_data::{
                 parse_agg_trade, parse_book_ticker, parse_depth_update, parse_kline,
-                parse_mark_price, parse_trade,
+                parse_liquidation, parse_mark_price, parse_trade,
             },
         },
     },
@@ -330,14 +330,12 @@ impl BinanceFuturesDataClient {
                 }
             }
             BinanceFuturesWsStreamsMessage::ForceOrder(ref liq_msg) => {
-                log::info!(
-                    "Liquidation: {} {:?} {:?} qty={} at price={}",
-                    liq_msg.order.symbol,
-                    liq_msg.order.side,
-                    liq_msg.order.status,
-                    liq_msg.order.original_qty,
-                    liq_msg.order.average_price,
-                );
+                if let Some(instrument) = cache.get(&liq_msg.order.symbol) {
+                    match parse_liquidation(liq_msg, instrument, ts_init) {
+                        Ok(liq) => Self::send_data(data_sender, Data::Liquidation(liq)),
+                        Err(e) => log::warn!("Failed to parse liquidation: {e}"),
+                    }
+                }
             }
             BinanceFuturesWsStreamsMessage::Ticker(ref ticker_msg) => {
                 log::debug!(
