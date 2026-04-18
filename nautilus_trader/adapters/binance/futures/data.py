@@ -222,8 +222,16 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
         instrument_id: InstrumentId,
         interval_secs: int | None = None,
     ) -> None:
-        if instrument_id in self._oi_poll_tasks:
-            return
+        # Only short-circuit when the existing task is still running. After a
+        # disconnect or any natural completion the task stays in _tasks until
+        # garbage-collected, so we must drop the stale entry here to let a
+        # resubscribe (or reconnect + resubscribe) spin up a fresh poller.
+        existing = self._oi_poll_tasks.get(instrument_id)
+        if existing is not None:
+            if not existing.done():
+                return
+            self._oi_poll_tasks.pop(instrument_id, None)
+
         secs = interval_secs if interval_secs is not None else self._oi_poll_default_secs
         if secs < 5:
             secs = 5  # Do not poll REST faster than 5s by default
@@ -235,6 +243,15 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
             log_msg=f"oi-poll-{instrument_id}",
         )
         self._oi_poll_tasks[instrument_id] = task
+
+        # Drop the task from the dict when it finishes (cancelled, errored, or
+        # otherwise) so later calls can restart it without tripping the
+        # short-circuit above.
+        def _clear(finished_task: asyncio.Task, _id: InstrumentId = instrument_id) -> None:
+            if self._oi_poll_tasks.get(_id) is finished_task:
+                self._oi_poll_tasks.pop(_id, None)
+
+        task.add_done_callback(_clear)
 
     def _stop_open_interest_polling(self, instrument_id: InstrumentId) -> None:
         task = self._oi_poll_tasks.pop(instrument_id, None)
