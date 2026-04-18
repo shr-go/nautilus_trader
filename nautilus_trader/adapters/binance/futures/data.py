@@ -135,6 +135,9 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
         # poller can emit on exactly those topics — a subscription that includes
         # `interval_secs` in its metadata must get samples on the same topic.
         self._oi_subscribed_data_types: dict[InstrumentId, list[DataType]] = {}
+        # Same pattern for forceOrder (liquidation) subscriptions: we track
+        # subscriber metadata so canonical + venue-specific topics both match.
+        self._liq_subscribed_data_types: dict[InstrumentId, list[DataType]] = {}
 
     # -- WEBSOCKET HANDLERS ---------------------------------------------------------------------------------
 
@@ -212,12 +215,67 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
             ts_init=ts_init,
         )
 
-        data_type = DataType(
-            BinanceLiquidation,
-            metadata={"instrument_id": instrument_id},
-        )
-        self._handle_data(CustomData(data_type=data_type, data=binance_liq))
+        # Emit one CustomData per tracked subscription so topics match whatever
+        # metadata the subscriber used. Payload dispatches by `DataType.type`.
+        subscribed_types = self._liq_subscribed_data_types.get(instrument_id) or []
+        emitted_any = False
+        for dt in subscribed_types:
+            emitted_any = True
+            if dt.type is BinanceLiquidation:
+                self._handle_data(CustomData(data_type=dt, data=binance_liq))
+            elif dt.type is Liquidation:
+                self._handle_data(CustomData(data_type=dt, data=liq))
+            else:  # pragma: no cover (defensive)
+                self._log.warning(
+                    f"Unexpected liquidation subscription data_type {dt}; skipping emit",
+                )
+
+        if not emitted_any:
+            # No subscription recorded yet — fall back to the default
+            # venue-specific custom-data topic so the feed is still observable.
+            self._handle_data(
+                CustomData(
+                    data_type=DataType(
+                        BinanceLiquidation,
+                        metadata={"instrument_id": instrument_id},
+                    ),
+                    data=binance_liq,
+                ),
+            )
+
+        # Always route the canonical object through the DataEngine so the
+        # `data.liquidations.{venue}.{symbol}` topic also fires.
         self._handle_data(liq)
+
+    # -- LIQUIDATION SUBSCRIPTION TRACKING ------------------------------------------------------
+
+    def _register_liquidation_subscription(
+        self,
+        instrument_id: InstrumentId,
+        data_type: DataType,
+    ) -> None:
+        subscribed = self._liq_subscribed_data_types.setdefault(instrument_id, [])
+        if data_type not in subscribed:
+            subscribed.append(data_type)
+
+    def _deregister_liquidation_subscription(
+        self,
+        instrument_id: InstrumentId,
+        data_type: DataType | None,
+    ) -> bool:
+        """Returns True if any subscription remains, False if all are gone."""
+        if data_type is None:
+            self._liq_subscribed_data_types.pop(instrument_id, None)
+            return False
+        subscribed = self._liq_subscribed_data_types.get(instrument_id)
+        if subscribed is None:
+            return False
+        if data_type in subscribed:
+            subscribed.remove(data_type)
+        if not subscribed:
+            self._liq_subscribed_data_types.pop(instrument_id, None)
+            return False
+        return True
 
     # -- OPEN INTEREST POLLING ------------------------------------------------------------------
 
@@ -316,15 +374,27 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
                     size_precision=instrument.size_precision,
                     ts_init=ts_init,
                 )
-                # Emit `BinanceOpenInterest` on every subscribed `DataType` so
-                # the topic matches whatever metadata the subscriber used (with
-                # or without `interval_secs`). Fall back to the bare
-                # instrument_id topic if no subscription metadata is tracked.
-                subscribed_types = self._oi_subscribed_data_types.get(instrument_id)
-                if subscribed_types:
-                    for dt in subscribed_types:
+                # Emit one CustomData per tracked subscription so the topic
+                # matches whatever metadata the subscriber used (with or
+                # without `interval_secs`). The payload is either the
+                # venue-specific `BinanceOpenInterest` or the canonical
+                # `OpenInterest` depending on the subscribed `DataType.type`.
+                subscribed_types = self._oi_subscribed_data_types.get(instrument_id) or []
+                emitted_any = False
+                for dt in subscribed_types:
+                    emitted_any = True
+                    if dt.type is BinanceOpenInterest:
                         self._handle_data(CustomData(data_type=dt, data=binance_oi))
-                else:
+                    elif dt.type is OpenInterest:
+                        self._handle_data(CustomData(data_type=dt, data=oi))
+                    else:  # pragma: no cover (defensive)
+                        self._log.warning(
+                            f"Unexpected OI subscription data_type {dt}; skipping emit",
+                        )
+
+                if not emitted_any:
+                    # Default topics when no subscription has been recorded yet
+                    # (covers the non-dispatch emit path, e.g. tests).
                     self._handle_data(
                         CustomData(
                             data_type=DataType(
@@ -334,6 +404,10 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
                             data=binance_oi,
                         ),
                     )
+
+                # Always route the canonical object through the DataEngine so
+                # the default `data.open_interest.{venue}.{symbol}` topic and
+                # the cache path still fire.
                 self._handle_data(oi)
 
                 backoff = 1.0

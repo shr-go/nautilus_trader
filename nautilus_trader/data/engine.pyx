@@ -2784,33 +2784,18 @@ cdef class DataEngine(Component):
         self._msgbus.publish_c(topic=self._topic_cache.get_close_prices_topic(data.instrument_id, historical), msg=data)
 
     cpdef void _handle_liquidation(self, Liquidation data, bint historical = False):
-        # Publish on the canonical topic for anyone subscribed via dedicated helpers,
-        # and on the custom-data topic that `subscribe_data(DataType(Liquidation, {...}))`
-        # registers with — that's the user-facing subscription path per the design plan.
+        # Canonical topic only; adapters drive per-subscription custom-data
+        # topic emissions (they know the exact metadata subscribers requested),
+        # which avoids duplicate delivery when both paths would match.
         self._msgbus.publish_c(
             topic=self._topic_cache.get_liquidations_topic(data.instrument_id, historical),
             msg=data,
         )
-        self._msgbus.publish_c(
-            topic=self._topic_cache.get_custom_data_topic(
-                DataType(Liquidation, metadata={"instrument_id": data.instrument_id}),
-                data.instrument_id,
-                historical,
-            ),
-            msg=data,
-        )
 
     cpdef void _handle_open_interest(self, OpenInterest data, bint historical = False):
+        # See _handle_liquidation — canonical topic only.
         self._msgbus.publish_c(
             topic=self._topic_cache.get_open_interest_topic(data.instrument_id, historical),
-            msg=data,
-        )
-        self._msgbus.publish_c(
-            topic=self._topic_cache.get_custom_data_topic(
-                DataType(OpenInterest, metadata={"instrument_id": data.instrument_id}),
-                data.instrument_id,
-                historical,
-            ),
             msg=data,
         )
 

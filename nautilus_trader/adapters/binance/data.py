@@ -341,6 +341,9 @@ class BinanceCommonDataClient(LiveMarketDataClient):
                     f"for {self._binance_account_type.value} account types",
                 )
                 return
+            # Record the subscription so the WS handler emits on a matching
+            # custom-data topic (subscriber metadata preserved).
+            self._register_liquidation_subscription(instrument_id, command.data_type)
             await self._ws_client.subscribe_force_orders(instrument_id.symbol.value)
         elif command.data_type.type in (BinanceOpenInterest, OpenInterest):
             if not self._binance_account_type.is_futures:
@@ -384,7 +387,12 @@ class BinanceCommonDataClient(LiveMarketDataClient):
         elif command.data_type.type in (BinanceLiquidation, Liquidation):
             if not self._binance_account_type.is_futures:
                 return
-            await self._ws_client.unsubscribe_force_orders(instrument_id.symbol.value)
+            # Only tear down the WS stream when the LAST subscriber leaves.
+            still_active = self._deregister_liquidation_subscription(
+                instrument_id, command.data_type,
+            )
+            if not still_active:
+                await self._ws_client.unsubscribe_force_orders(instrument_id.symbol.value)
         elif command.data_type.type in (BinanceOpenInterest, OpenInterest):
             if not self._binance_account_type.is_futures:
                 return
