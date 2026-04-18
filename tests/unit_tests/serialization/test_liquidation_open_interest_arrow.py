@@ -68,3 +68,35 @@ def test_open_interest_round_trips_through_arrow_table():
     )
     table = ArrowSerializer.rust_defined_to_record_batch([oi], data_cls=OpenInterest)
     assert table.num_rows == 1
+
+
+def test_liquidation_deserialize_from_arrow():
+    """Deserialize the Arrow table produced by `rust_defined_to_record_batch`
+    back into Liquidation objects — this is the path
+    `ParquetDataCatalog.query_last_timestamp` / read operations take."""
+    liq = Liquidation(
+        instrument_id=BTCUSDT_BINANCE.id,
+        side=OrderSide.SELL,
+        quantity=Quantity.from_str("0.500"),
+        price=Price.from_str("50000.10"),
+        order_status=OrderStatus.FILLED,
+        ts_event=1,
+        ts_init=2,
+    )
+    table = ArrowSerializer.rust_defined_to_record_batch([liq], data_cls=Liquidation)
+    out = ArrowSerializer.deserialize(data_cls=Liquidation, batch=table)
+    assert len(out) == 1
+    assert out[0] == liq
+
+
+def test_open_interest_deserialize_from_arrow():
+    oi = OpenInterest(
+        instrument_id=BTCUSDT_BINANCE.id,
+        value=Quantity.from_str("12345.678"),
+        ts_event=1,
+        ts_init=2,
+    )
+    table = ArrowSerializer.rust_defined_to_record_batch([oi], data_cls=OpenInterest)
+    out = ArrowSerializer.deserialize(data_cls=OpenInterest, batch=table)
+    assert len(out) == 1
+    assert out[0] == oi

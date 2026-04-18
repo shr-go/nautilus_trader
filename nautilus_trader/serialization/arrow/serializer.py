@@ -331,6 +331,34 @@ class ArrowSerializer:
 
     @staticmethod
     def _deserialize_rust(data_cls: type, table: pa.Table) -> list[Data | Event]:
+        # Types that deserialize via a direct pyo3 Arrow-IPC decode instead of
+        # a V2 Wrangler class. The decoder takes Arrow IPC bytes and returns a
+        # list of pyo3 Rust objects, which we then round-trip to the Cython
+        # type via `from_pyo3`.
+        _DIRECT_DECODERS = {
+            Liquidation: (
+                nautilus_pyo3.liquidations_from_arrow_record_batch_bytes,
+                Liquidation.from_pyo3,
+            ),
+            OpenInterest: (
+                nautilus_pyo3.open_interest_from_arrow_record_batch_bytes,
+                OpenInterest.from_pyo3,
+            ),
+        }
+
+        if data_cls in _DIRECT_DECODERS:
+            decode_fn, from_pyo3 = _DIRECT_DECODERS[data_cls]
+            batches = table.to_batches() if isinstance(table, pa.Table) else [table]
+            result: list[Data | Event] = []
+            for batch in batches:
+                sink = BytesIO()
+                writer = pa.ipc.new_stream(sink, batch.schema)
+                writer.write_batch(batch)
+                writer.close()
+                for pyo3_obj in decode_fn(sink.getvalue()):
+                    result.append(from_pyo3(pyo3_obj))
+            return result
+
         Wrangler = {
             OrderBookDelta: OrderBookDeltaDataWranglerV2,
             OrderBookDeltas: OrderBookDeltaDataWranglerV2,
@@ -341,8 +369,6 @@ class ArrowSerializer:
             MarkPriceUpdate: None,
             IndexPriceUpdate: None,
             InstrumentClose: None,
-            Liquidation: None,
-            OpenInterest: None,
         }[data_cls]
 
         if Wrangler is None:

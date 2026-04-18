@@ -128,13 +128,21 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
         )
         self._decoder_futures_force_order_msg = msgspec.json.Decoder(BinanceFuturesForceOrderMsg)
 
-        # Open-interest REST polling state
-        self._oi_poll_tasks: dict[InstrumentId, asyncio.Task] = {}
+        # Open-interest REST polling state.
+        #
+        # Poll tasks and subscriber tracking are keyed by
+        # (instrument_id, interval_secs) so two subscribers that request the
+        # same instrument with DIFFERENT intervals each get their own cadence
+        # and their own `poll_interval_secs` field on emitted
+        # `BinanceOpenInterest` samples. Keying by instrument alone would let
+        # the second subscriber silently share the first's interval.
+        self._oi_poll_tasks: dict[tuple[InstrumentId, int], asyncio.Task] = {}
         self._oi_poll_default_secs: int = 5
-        # Track every `DataType` currently subscribed for each instrument so the
-        # poller can emit on exactly those topics — a subscription that includes
-        # `interval_secs` in its metadata must get samples on the same topic.
-        self._oi_subscribed_data_types: dict[InstrumentId, list[DataType]] = {}
+        # Track every `DataType` currently subscribed per (instrument_id,
+        # interval_secs) so the poller can emit on exactly those topics —
+        # a subscription with `interval_secs` in its metadata must get samples
+        # on the same topic (and no other interval's emissions).
+        self._oi_subscribed_data_types: dict[tuple[InstrumentId, int], list[DataType]] = {}
         # Same pattern for forceOrder (liquidation) subscriptions: we track
         # subscriber metadata so canonical + venue-specific topics both match.
         self._liq_subscribed_data_types: dict[InstrumentId, list[DataType]] = {}
@@ -289,17 +297,26 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
 
     # -- OPEN INTEREST POLLING ------------------------------------------------------------------
 
+    def _resolve_oi_interval_secs(self, interval_secs: int | None) -> int:
+        secs = interval_secs if interval_secs is not None else self._oi_poll_default_secs
+        if secs < 5:
+            secs = 5  # Do not poll REST faster than 5s by default
+        return secs
+
     def _start_open_interest_polling(
         self,
         instrument_id: InstrumentId,
         interval_secs: int | None = None,
         data_type: DataType | None = None,
     ) -> None:
-        # Record every subscribed DataType so the poll loop publishes on the
-        # same topic the subscriber is listening on (custom-data topics are
-        # keyed on the full metadata including any `interval_secs`).
+        secs = self._resolve_oi_interval_secs(interval_secs)
+        key = (instrument_id, secs)
+
+        # Record every subscribed DataType for THIS (instrument, interval)
+        # bucket so each interval's poll loop only emits on the subscribers
+        # that actually asked for that cadence.
         if data_type is not None:
-            subscribed = self._oi_subscribed_data_types.setdefault(instrument_id, [])
+            subscribed = self._oi_subscribed_data_types.setdefault(key, [])
             if data_type not in subscribed:
                 subscribed.append(data_type)
 
@@ -307,30 +324,29 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
         # disconnect or any natural completion the task stays in _tasks until
         # garbage-collected, so we must drop the stale entry here to let a
         # resubscribe (or reconnect + resubscribe) spin up a fresh poller.
-        existing = self._oi_poll_tasks.get(instrument_id)
+        existing = self._oi_poll_tasks.get(key)
         if existing is not None:
             if not existing.done():
                 return
-            self._oi_poll_tasks.pop(instrument_id, None)
-
-        secs = interval_secs if interval_secs is not None else self._oi_poll_default_secs
-        if secs < 5:
-            secs = 5  # Do not poll REST faster than 5s by default
+            self._oi_poll_tasks.pop(key, None)
 
         # Register via the LiveDataClient task registry so disconnect/shutdown
         # cancels the loop together with the rest of the client's pending tasks.
         task = self.create_task(
             self._open_interest_poll_loop(instrument_id, secs),
-            log_msg=f"oi-poll-{instrument_id}",
+            log_msg=f"oi-poll-{instrument_id}-{secs}s",
         )
-        self._oi_poll_tasks[instrument_id] = task
+        self._oi_poll_tasks[key] = task
 
         # Drop the task from the dict when it finishes (cancelled, errored, or
         # otherwise) so later calls can restart it without tripping the
         # short-circuit above.
-        def _clear(finished_task: asyncio.Task, _id: InstrumentId = instrument_id) -> None:
-            if self._oi_poll_tasks.get(_id) is finished_task:
-                self._oi_poll_tasks.pop(_id, None)
+        def _clear(
+            finished_task: asyncio.Task,
+            _key: tuple[InstrumentId, int] = key,
+        ) -> None:
+            if self._oi_poll_tasks.get(_key) is finished_task:
+                self._oi_poll_tasks.pop(_key, None)
 
         task.add_done_callback(_clear)
 
@@ -338,22 +354,47 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
         self,
         instrument_id: InstrumentId,
         data_type: DataType | None = None,
+        interval_secs: int | None = None,
     ) -> None:
-        # Only tear down when the LAST subscriber for this instrument is gone.
-        # Removing a specific DataType keeps other active subscriptions alive.
+        # Derive the (instrument_id, interval) bucket this subscription lives
+        # in. If an explicit interval wasn't provided, recover it from the
+        # data_type metadata (or fall back to default). When neither is
+        # available (e.g. disconnect-all), tear down every bucket.
+        if data_type is not None and interval_secs is None:
+            interval_secs = data_type.metadata.get("interval_secs")
+
+        if data_type is None and interval_secs is None:
+            self._teardown_all_oi_buckets(instrument_id)
+            return
+
+        secs = self._resolve_oi_interval_secs(interval_secs)
+        key = (instrument_id, secs)
+
+        # Only tear down this bucket when its LAST subscriber is gone.
         if data_type is not None:
-            subscribed = self._oi_subscribed_data_types.get(instrument_id)
+            subscribed = self._oi_subscribed_data_types.get(key)
             if subscribed is not None and data_type in subscribed:
                 subscribed.remove(data_type)
                 if subscribed:
                     return
-                self._oi_subscribed_data_types.pop(instrument_id, None)
+                self._oi_subscribed_data_types.pop(key, None)
         else:
-            self._oi_subscribed_data_types.pop(instrument_id, None)
+            self._oi_subscribed_data_types.pop(key, None)
 
-        task = self._oi_poll_tasks.pop(instrument_id, None)
+        task = self._oi_poll_tasks.pop(key, None)
         if task is not None and not task.done():
             task.cancel()
+
+    def _teardown_all_oi_buckets(self, instrument_id: InstrumentId) -> None:
+        for key in list(self._oi_subscribed_data_types.keys()):
+            if key[0] == instrument_id:
+                self._oi_subscribed_data_types.pop(key, None)
+        for key in list(self._oi_poll_tasks.keys()):
+            if key[0] != instrument_id:
+                continue
+            task = self._oi_poll_tasks.pop(key, None)
+            if task is not None and not task.done():
+                task.cancel()
 
     async def _open_interest_poll_loop(
         self,
@@ -384,13 +425,14 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
                     size_precision=instrument.size_precision,
                     ts_init=ts_init,
                 )
-                # Emit one CustomData per tracked subscription so the topic
-                # matches whatever metadata the subscriber used (with or
-                # without `interval_secs`). Payload dispatches by
+                # Emit one CustomData per tracked subscription in THIS bucket
+                # so the topic matches whatever metadata the subscriber used
+                # (with or without `interval_secs`). Payload dispatches by
                 # `DataType.type`. Skip the canonical default — engine's
                 # `_handle_open_interest` already publishes on that topic.
                 default_metadata = {"instrument_id": instrument_id}
-                subscribed_types = self._oi_subscribed_data_types.get(instrument_id) or []
+                key = (instrument_id, interval_secs)
+                subscribed_types = self._oi_subscribed_data_types.get(key) or []
                 emitted_any = False
                 for dt in subscribed_types:
                     if dt.type is OpenInterest and dt.metadata == default_metadata:

@@ -395,3 +395,57 @@ pub fn py_open_interest_to_arrow_record_batch_bytes(
         Err(e) => Err(to_pyvalue_err(e)),
     }
 }
+
+/// Decodes Arrow IPC bytes into a list of `Liquidation`.
+///
+/// # Errors
+///
+/// Returns a `PyErr` if decoding fails.
+#[pyfunction(name = "liquidations_from_arrow_record_batch_bytes")]
+#[pyo3_stub_gen::derive::gen_stub_pyfunction(module = "nautilus_trader.serialization")]
+pub fn py_liquidations_from_arrow_record_batch_bytes(
+    _py: Python,
+    data: Vec<u8>,
+) -> PyResult<Vec<Liquidation>> {
+    let cursor = Cursor::new(data);
+    let reader = StreamReader::try_new(cursor, None).map_err(to_pyruntime_err)?;
+
+    let mut results = Vec::new();
+
+    for batch_result in reader {
+        let batch = batch_result.map_err(to_pyruntime_err)?;
+        let metadata = batch.schema().metadata().clone();
+        let decoded =
+            Liquidation::decode_typed_batch(&metadata, batch).map_err(to_pyvalue_err)?;
+        results.extend(decoded);
+    }
+
+    Ok(results)
+}
+
+/// Decodes Arrow IPC bytes into a list of `OpenInterest`.
+///
+/// # Errors
+///
+/// Returns a `PyErr` if decoding fails.
+#[pyfunction(name = "open_interest_from_arrow_record_batch_bytes")]
+#[pyo3_stub_gen::derive::gen_stub_pyfunction(module = "nautilus_trader.serialization")]
+pub fn py_open_interest_from_arrow_record_batch_bytes(
+    _py: Python,
+    data: Vec<u8>,
+) -> PyResult<Vec<OpenInterest>> {
+    let cursor = Cursor::new(data);
+    let reader = StreamReader::try_new(cursor, None).map_err(to_pyruntime_err)?;
+
+    let mut results = Vec::new();
+
+    for batch_result in reader {
+        let batch = batch_result.map_err(to_pyruntime_err)?;
+        let metadata = batch.schema().metadata().clone();
+        let decoded =
+            OpenInterest::decode_typed_batch(&metadata, batch).map_err(to_pyvalue_err)?;
+        results.extend(decoded);
+    }
+
+    Ok(results)
+}

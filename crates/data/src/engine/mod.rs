@@ -70,7 +70,7 @@ use nautilus_common::{
     timer::{TimeEvent, TimeEventCallback},
 };
 use nautilus_core::{
-    UUID4, WeakCell,
+    Params, UUID4, WeakCell,
     correctness::{
         FAILED, check_key_in_map, check_key_not_in_map, check_predicate_false, check_predicate_true,
     },
@@ -1257,19 +1257,53 @@ impl DataEngine {
     }
 
     fn handle_liquidation(&self, liq: Liquidation) {
+        // Canonical topic
         let topic = switchboard::get_liquidation_topic(liq.instrument_id);
         msgbus::publish_any(topic, &liq);
+
+        // Default custom-data topic — matches what
+        // `DataActor::subscribe_data(DataType(Liquidation, {"instrument_id": X}))`
+        // registers on via `get_custom_topic(&data_type)`. Without this,
+        // Rust-side `subscribe_data` never fires.
+        let data_type = DataType::new(
+            stringify!(Liquidation),
+            Some(Self::instrument_id_params(liq.instrument_id)),
+            None,
+        );
+        let custom_topic = switchboard::get_custom_topic(&data_type);
+        msgbus::publish_any(custom_topic, &liq);
     }
 
     fn handle_open_interest(&self, oi: OpenInterest) {
+        // Canonical topic
         let topic = switchboard::get_open_interest_topic(oi.instrument_id);
         msgbus::publish_any(topic, &oi);
+
+        // Default custom-data topic (see handle_liquidation for rationale)
+        let data_type = DataType::new(
+            stringify!(OpenInterest),
+            Some(Self::instrument_id_params(oi.instrument_id)),
+            None,
+        );
+        let custom_topic = switchboard::get_custom_topic(&data_type);
+        msgbus::publish_any(custom_topic, &oi);
     }
 
     fn handle_custom_data(&self, custom: &CustomData) {
         log::debug!("Processing custom data: {}", custom.data.type_name());
         let topic = switchboard::get_custom_topic(&custom.data_type);
         msgbus::publish_any(topic, custom);
+    }
+
+    /// Builds a `Params` carrying a single `instrument_id` entry — used by
+    /// canonical-type dispatchers when composing a default custom-data topic.
+    fn instrument_id_params(instrument_id: InstrumentId) -> Params {
+        let mut params = Params::new();
+        params.insert(
+            "instrument_id".to_string(),
+            serde_json::Value::String(instrument_id.to_string()),
+        );
+        params
     }
 
     /// Drains deferred subscribe/unsubscribe commands pushed by option chain
