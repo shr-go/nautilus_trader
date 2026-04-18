@@ -320,15 +320,27 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
             if data_type not in subscribed:
                 subscribed.append(data_type)
 
-        # Only short-circuit when the existing task is still running. After a
-        # disconnect or any natural completion the task stays in _tasks until
-        # garbage-collected, so we must drop the stale entry here to let a
-        # resubscribe (or reconnect + resubscribe) spin up a fresh poller.
+        # Evict the bucket's existing task if it's finished OR cancel has
+        # already been requested on it (disconnect / stop / shutdown call
+        # `cancel()` but the task may not yet have reached `done()`).
+        # Short-circuiting on a cancelled-but-not-yet-done task would let
+        # the pending cancellation race the resubscribe — the subsequent
+        # `_clear` done-callback would pop the entry and leave the bucket
+        # with no active poller.
         existing = self._oi_poll_tasks.get(key)
         if existing is not None:
-            if not existing.done():
+            # `Task.cancelling()` is available since Python 3.11; we target
+            # 3.12+. Non-zero means cancel has been requested (and the task
+            # is either about to exit or already cancelled).
+            has_cancel_pending = bool(existing.cancelling()) if hasattr(
+                existing, "cancelling"
+            ) else False
+            if existing.done() or has_cancel_pending:
+                self._oi_poll_tasks.pop(key, None)
+                if not existing.done():
+                    existing.cancel()
+            else:
                 return
-            self._oi_poll_tasks.pop(key, None)
 
         # Register via the LiveDataClient task registry so disconnect/shutdown
         # cancels the loop together with the rest of the client's pending tasks.
@@ -396,16 +408,60 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
             if task is not None and not task.done():
                 task.cancel()
 
+    async def _wait_for_instrument_in_cache(
+        self,
+        instrument_id: InstrumentId,
+        poll_interval_secs: float = 0.5,
+        max_wait_secs: float = 30.0,
+    ):
+        """
+        Wait for the instrument to land in the cache before the poll loop
+        issues any REST request.
+
+        Subscribing before `_connect()` has finished loading instruments is
+        a real race: the subscribe command can route to the adapter
+        synchronously, but instruments are populated asynchronously as the
+        HTTP request completes. Exiting on the first miss leaves the
+        bucket's subscription bookkeeping in place with no task polling
+        it, so the feed stays silent until an explicit unsub/resub cycle.
+
+        Returns the instrument once available, or `None` if the task was
+        cancelled (disconnect/shutdown) before it showed up. Gives up and
+        returns `None` after `max_wait_secs` with a warning — that keeps
+        the loop from leaking forever if the instrument id is genuinely
+        invalid.
+        """
+        instrument = self._cache.instrument(instrument_id)
+        if instrument is not None:
+            return instrument
+
+        waited = 0.0
+        while waited < max_wait_secs:
+            await asyncio.sleep(poll_interval_secs)
+            waited += poll_interval_secs
+            instrument = self._cache.instrument(instrument_id)
+            if instrument is not None:
+                return instrument
+
+        self._log.warning(
+            f"OI polling gave up waiting for instrument {instrument_id} "
+            f"to appear in cache after {max_wait_secs:.1f}s",
+        )
+        return None
+
     async def _open_interest_poll_loop(
         self,
         instrument_id: InstrumentId,
         interval_secs: int,
     ) -> None:
-        instrument = self._cache.instrument(instrument_id)
+        # Subscriptions can be issued before `_connect()` finishes populating
+        # the instrument cache. Spin (with backoff) until the instrument
+        # shows up or the task is cancelled — exiting immediately would
+        # strand the subscription's bookkeeping with no active poller and no
+        # automatic retry.
+        instrument = await self._wait_for_instrument_in_cache(instrument_id)
         if instrument is None:
-            self._log.warning(
-                f"Cannot start OI polling: instrument not in cache for {instrument_id}",
-            )
+            # Cancelled while waiting (disconnect/shutdown).
             return
 
         backoff = 1.0

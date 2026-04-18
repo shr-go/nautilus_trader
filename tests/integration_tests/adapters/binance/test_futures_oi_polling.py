@@ -381,6 +381,132 @@ async def test_distinct_intervals_emit_with_correct_poll_interval_secs(
 
 
 @pytest.mark.asyncio
+async def test_resubscribe_after_cancel_but_before_task_exits_spawns_fresh_task(
+    event_loop,
+    binance_http_client,
+    monkeypatch,
+):
+    """Regression: after `cancel()` is called on an OI poll task, a
+    resubscribe for the same (instrument, interval) bucket that arrives
+    BEFORE the task reaches `done()` must spawn a fresh task.
+
+    Previously the `_start_open_interest_polling` short-circuit was gated
+    only on `.done()` so a cancelled-but-still-draining task would block
+    the resubscribe; the subsequent done-callback would then pop the
+    bucket empty, leaving the subscription with no poller until an
+    explicit unsub/resub cycle."""
+    data_client, _ = _make_client(event_loop)
+
+    # Park the poll loop so cancel() takes a beat to actually finish the task.
+    async def _parked_loop(*_args, **_kwargs):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # Simulate a slow-exiting loop: yield once before exiting.
+            await asyncio.sleep(0)
+            raise
+
+    monkeypatch.setattr(data_client, "_open_interest_poll_loop", _parked_loop)
+
+    instrument_id = TestInstrumentProvider.btcusdt_binance().id
+    key = (instrument_id, 5)
+
+    # 1. Start the poller, then explicitly cancel (simulating disconnect).
+    data_client._start_open_interest_polling(instrument_id, interval_secs=5)
+    first = data_client._oi_poll_tasks[key]
+    first.cancel()
+    # Do NOT yield — the task hasn't reached done() yet; `.cancelling()` is 1.
+    assert not first.done()
+
+    # 2. Resubscribe immediately. Must NOT short-circuit.
+    data_client._start_open_interest_polling(instrument_id, interval_secs=5)
+
+    # 3. Let both tasks settle.
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    second = data_client._oi_poll_tasks.get(key)
+    assert second is not None, (
+        "resubscribe after cancel must spawn a fresh task even if the old "
+        "one hasn't fully exited yet"
+    )
+    assert second is not first
+    assert not second.done()
+
+    # Cleanup
+    second.cancel()
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_oi_poll_loop_waits_for_instrument_cache_population(
+    event_loop,
+    binance_http_client,
+    monkeypatch,
+):
+    """Regression: if an OI subscription fires before the instrument is in
+    the cache (startup race), the poll loop used to exit immediately with
+    a warning. The bookkeeping stayed, the task was dead, so the feed was
+    permanently silent. The loop now waits for the instrument to show up
+    before issuing any REST calls."""
+    data_client, cache = _make_client(event_loop)
+
+    btc = TestInstrumentProvider.btcusdt_binance()
+    # Do NOT seed the cache yet — simulate the race where the subscription
+    # beats _connect() to the punch.
+
+    # Track each HTTP call so we can assert the loop doesn't issue one
+    # until the instrument is available.
+    http_calls: list = []
+
+    async def _stub_query_open_interest(symbol):
+        http_calls.append(symbol)
+        from nautilus_trader.adapters.binance.futures.schemas.market import (
+            BinanceFuturesOpenInterestResponse,
+        )
+
+        return BinanceFuturesOpenInterestResponse(
+            symbol=symbol,
+            openInterest="1234.567",
+            time=1_700_000_000_000,
+        )
+
+    # Short-circuit the REST client's query so we don't need a live HTTP.
+    monkeypatch.setattr(
+        data_client._futures_http_market,
+        "query_open_interest",
+        _stub_query_open_interest,
+    )
+
+    # Start the poll task while the cache is empty (startup race).
+    data_client._start_open_interest_polling(btc.id, interval_secs=5)
+
+    # Give the poll loop a few scheduler turns. It should NOT have issued
+    # any REST calls yet (instrument is still missing).
+    for _ in range(4):
+        await asyncio.sleep(0)
+    assert http_calls == [], (
+        "poll loop must NOT issue REST requests before the instrument cache "
+        f"is populated; got {len(http_calls)} premature call(s)"
+    )
+
+    # Populate the cache — mirrors `_connect()` finishing its HTTP load.
+    cache.add_instrument(btc)
+
+    # The poller's wait-helper sleeps 0.5s between cache checks; give it
+    # two cycles plus a margin to pick up the instrument and fire a call.
+    await asyncio.sleep(1.2)
+
+    assert len(http_calls) >= 1, (
+        "poll loop must resume polling once the instrument lands in cache"
+    )
+
+    # Cleanup
+    data_client._stop_open_interest_polling(btc.id, interval_secs=5)
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
 async def test_oi_poll_task_clears_entry_when_loop_completes(
     event_loop,
     binance_http_client,
