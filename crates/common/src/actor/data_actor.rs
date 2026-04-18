@@ -35,7 +35,8 @@ use nautilus_model::defi::{
 use nautilus_model::{
     data::{
         Bar, BarType, CustomData, DataType, FundingRateUpdate, IndexPriceUpdate, InstrumentStatus,
-        MarkPriceUpdate, OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
+        Liquidation, MarkPriceUpdate, OpenInterest, OrderBookDeltas, OrderBookDepth10, QuoteTick,
+        TradeTick,
         close::InstrumentClose,
         option_chain::{OptionChainSlice, OptionGreeks, StrikeRange},
     },
@@ -377,6 +378,26 @@ pub trait DataActor:
     /// Returns an error if handling the funding rate update fails.
     #[allow(unused_variables)]
     fn on_funding_rate(&mut self, funding_rate: &FundingRateUpdate) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Actions to be performed when receiving a liquidation event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if handling the liquidation fails.
+    #[allow(unused_variables)]
+    fn on_liquidation(&mut self, liquidation: &Liquidation) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Actions to be performed when receiving an open-interest sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if handling the open-interest sample fails.
+    #[allow(unused_variables)]
+    fn on_open_interest(&mut self, open_interest: &OpenInterest) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -1258,6 +1279,51 @@ pub trait DataActor:
         );
     }
 
+    /// Subscribe to streaming [`Liquidation`] data for the `instrument_id`.
+    ///
+    /// Events are dispatched via `on_data` as raw `Liquidation`-carrying
+    /// `CustomData` wrappers are not used here; the handler receives the
+    /// canonical type directly. See `DataActorCore::subscribe_liquidations`
+    /// for the stream-activation path.
+    fn subscribe_liquidations(
+        &mut self,
+        instrument_id: InstrumentId,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) where
+        Self: 'static + Debug + Sized,
+    {
+        let actor_id = self.actor_id().inner();
+        let handler = ShareableMessageHandler::from_typed(move |liq: &Liquidation| {
+            if let Some(mut actor) = try_get_actor_unchecked::<Self>(&actor_id) {
+                if let Err(e) = actor.on_liquidation(liq) {
+                    log::error!("Error in on_liquidation for actor {actor_id}: {e}");
+                }
+            }
+        });
+        DataActorCore::subscribe_liquidations(self, handler, instrument_id, client_id, params);
+    }
+
+    /// Subscribe to streaming [`OpenInterest`] data for the `instrument_id`.
+    fn subscribe_open_interest(
+        &mut self,
+        instrument_id: InstrumentId,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) where
+        Self: 'static + Debug + Sized,
+    {
+        let actor_id = self.actor_id().inner();
+        let handler = ShareableMessageHandler::from_typed(move |oi: &OpenInterest| {
+            if let Some(mut actor) = try_get_actor_unchecked::<Self>(&actor_id) {
+                if let Err(e) = actor.on_open_interest(oi) {
+                    log::error!("Error in on_open_interest for actor {actor_id}: {e}");
+                }
+            }
+        });
+        DataActorCore::subscribe_open_interest(self, handler, instrument_id, client_id, params);
+    }
+
     /// Subscribe to streaming [`IndexPriceUpdate`] data for the `instrument_id`.
     fn subscribe_index_prices(
         &mut self,
@@ -1725,6 +1791,30 @@ pub trait DataActor:
         Self: 'static + Debug + Sized,
     {
         DataActorCore::unsubscribe_mark_prices(self, instrument_id, client_id, params);
+    }
+
+    /// Unsubscribe from streaming [`Liquidation`] data for the `instrument_id`.
+    fn unsubscribe_liquidations(
+        &mut self,
+        instrument_id: InstrumentId,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) where
+        Self: 'static + Debug + Sized,
+    {
+        DataActorCore::unsubscribe_liquidations(self, instrument_id, client_id, params);
+    }
+
+    /// Unsubscribe from streaming [`OpenInterest`] data for the `instrument_id`.
+    fn unsubscribe_open_interest(
+        &mut self,
+        instrument_id: InstrumentId,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) where
+        Self: 'static + Debug + Sized,
+    {
+        DataActorCore::unsubscribe_open_interest(self, instrument_id, client_id, params);
     }
 
     /// Unsubscribe from streaming [`IndexPriceUpdate`] data for the `instrument_id`.
@@ -3534,6 +3624,89 @@ impl DataActorCore {
         self.send_data_cmd(DataCommand::Subscribe(command));
     }
 
+    /// Helper method for registering liquidation subscriptions from the trait.
+    ///
+    /// The handler receives raw `Liquidation` events on the canonical
+    /// `data.liquidations.{venue}.{symbol}` topic — matching what
+    /// `DataEngine::handle_liquidation` publishes. Activation of the
+    /// underlying venue stream goes through `SubscribeCustomData` with a
+    /// `DataType(Liquidation, {"instrument_id": X})` so adapters can
+    /// dispatch on type-name (same routing Python's adapter uses).
+    pub fn subscribe_liquidations(
+        &mut self,
+        handler: ShareableMessageHandler,
+        instrument_id: InstrumentId,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) {
+        self.check_registered();
+
+        let topic = msgbus::switchboard::get_liquidation_topic(instrument_id);
+        self.add_subscription_any(topic, handler);
+
+        let mut metadata = Params::new();
+        metadata.insert(
+            "instrument_id".to_string(),
+            serde_json::Value::String(instrument_id.to_string()),
+        );
+        let data_type = DataType::new(
+            stringify!(Liquidation),
+            Some(metadata),
+            None,
+        );
+        let command = SubscribeCommand::Data(SubscribeCustomData {
+            data_type,
+            client_id,
+            venue: Some(instrument_id.venue),
+            command_id: UUID4::new(),
+            ts_init: self.timestamp_ns(),
+            correlation_id: None,
+            params,
+        });
+
+        self.send_data_cmd(DataCommand::Subscribe(command));
+    }
+
+    /// Helper method for registering open-interest subscriptions from the trait.
+    ///
+    /// The handler receives raw `OpenInterest` events on the canonical
+    /// `data.open_interest.{venue}.{symbol}` topic. See
+    /// `subscribe_liquidations` for the stream-activation rationale.
+    pub fn subscribe_open_interest(
+        &mut self,
+        handler: ShareableMessageHandler,
+        instrument_id: InstrumentId,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) {
+        self.check_registered();
+
+        let topic = msgbus::switchboard::get_open_interest_topic(instrument_id);
+        self.add_subscription_any(topic, handler);
+
+        let mut metadata = Params::new();
+        metadata.insert(
+            "instrument_id".to_string(),
+            serde_json::Value::String(instrument_id.to_string()),
+        );
+        let data_type = DataType::new(
+            stringify!(OpenInterest),
+            Some(metadata),
+            None,
+        );
+        let command = SubscribeCommand::Data(SubscribeCustomData {
+            data_type,
+            client_id,
+            venue: Some(instrument_id.venue),
+            command_id: UUID4::new(),
+            ts_init: self.timestamp_ns(),
+            correlation_id: None,
+            params,
+        });
+
+        self.send_data_cmd(DataCommand::Subscribe(command));
+    }
+
     /// Helper method for subscribing to option chain snapshots from the trait.
     #[allow(clippy::too_many_arguments)]
     pub fn subscribe_option_chain(
@@ -3947,6 +4120,76 @@ impl DataActorCore {
 
         let command = UnsubscribeCommand::InstrumentClose(UnsubscribeInstrumentClose {
             instrument_id,
+            client_id,
+            venue: Some(instrument_id.venue),
+            command_id: UUID4::new(),
+            ts_init: self.timestamp_ns(),
+            correlation_id: None,
+            params,
+        });
+
+        self.send_data_cmd(DataCommand::Unsubscribe(command));
+    }
+
+    /// Helper method for unsubscribing from liquidations. Symmetric to
+    /// [`DataActorCore::subscribe_liquidations`].
+    pub fn unsubscribe_liquidations(
+        &mut self,
+        instrument_id: InstrumentId,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) {
+        self.check_registered();
+
+        let topic = msgbus::switchboard::get_liquidation_topic(instrument_id);
+        let pattern: MStr<Pattern> = topic.into();
+        if let Some(handler) = self.topic_handlers.remove(&pattern) {
+            msgbus::unsubscribe_any(pattern, &handler);
+        }
+
+        let mut metadata = Params::new();
+        metadata.insert(
+            "instrument_id".to_string(),
+            serde_json::Value::String(instrument_id.to_string()),
+        );
+        let data_type = DataType::new(stringify!(Liquidation), Some(metadata), None);
+        let command = UnsubscribeCommand::Data(UnsubscribeCustomData {
+            data_type,
+            client_id,
+            venue: Some(instrument_id.venue),
+            command_id: UUID4::new(),
+            ts_init: self.timestamp_ns(),
+            correlation_id: None,
+            params,
+        });
+
+        self.send_data_cmd(DataCommand::Unsubscribe(command));
+    }
+
+    /// Helper method for unsubscribing from open-interest samples. Symmetric to
+    /// [`DataActorCore::subscribe_open_interest`].
+    pub fn unsubscribe_open_interest(
+        &mut self,
+        instrument_id: InstrumentId,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) {
+        self.check_registered();
+
+        let topic = msgbus::switchboard::get_open_interest_topic(instrument_id);
+        let pattern: MStr<Pattern> = topic.into();
+        if let Some(handler) = self.topic_handlers.remove(&pattern) {
+            msgbus::unsubscribe_any(pattern, &handler);
+        }
+
+        let mut metadata = Params::new();
+        metadata.insert(
+            "instrument_id".to_string(),
+            serde_json::Value::String(instrument_id.to_string()),
+        );
+        let data_type = DataType::new(stringify!(OpenInterest), Some(metadata), None);
+        let command = UnsubscribeCommand::Data(UnsubscribeCustomData {
+            data_type,
             client_id,
             venue: Some(instrument_id.venue),
             command_id: UUID4::new(),
