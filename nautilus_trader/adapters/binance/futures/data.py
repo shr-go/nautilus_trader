@@ -412,42 +412,53 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
         self,
         instrument_id: InstrumentId,
         poll_interval_secs: float = 0.5,
-        max_wait_secs: float = 30.0,
+        warn_after_secs: float = 30.0,
     ):
         """
-        Wait for the instrument to land in the cache before the poll loop
-        issues any REST request.
+        Wait until the instrument is in the cache (or the task is cancelled).
 
-        Subscribing before `_connect()` has finished loading instruments is
-        a real race: the subscribe command can route to the adapter
-        synchronously, but instruments are populated asynchronously as the
-        HTTP request completes. Exiting on the first miss leaves the
-        bucket's subscription bookkeeping in place with no task polling
-        it, so the feed stays silent until an explicit unsub/resub cycle.
+        Subscribing before `_connect()` finishes loading instruments is a real
+        race: the subscribe command can route to the adapter synchronously,
+        but instruments are populated asynchronously as the HTTP request
+        completes. Exiting on the first miss leaves the bucket's subscription
+        bookkeeping in place with no task polling it.
 
-        Returns the instrument once available, or `None` if the task was
-        cancelled (disconnect/shutdown) before it showed up. Gives up and
-        returns `None` after `max_wait_secs` with a warning — that keeps
-        the loop from leaking forever if the instrument id is genuinely
-        invalid.
+        There is no hard timeout — a slow startup (e.g. a throttled or
+        reconnecting venue) can legitimately take longer than any bounded
+        wait, and abandoning the loop would silently strand the
+        subscription. Cancellation is the only termination path, and that
+        fires from `disconnect` / `unsubscribe` / shutdown through the
+        `LiveDataClient` task registry.
+
+        A warning is logged every `warn_after_secs` so a genuinely-invalid
+        `instrument_id` is still visible in logs — the caller is expected to
+        `unsubscribe` if they realize the subscription will never resolve.
         """
         instrument = self._cache.instrument(instrument_id)
         if instrument is not None:
             return instrument
 
         waited = 0.0
-        while waited < max_wait_secs:
+        next_warn_at = warn_after_secs
+        warned_once = False
+        while True:
             await asyncio.sleep(poll_interval_secs)
             waited += poll_interval_secs
             instrument = self._cache.instrument(instrument_id)
             if instrument is not None:
+                if warned_once:
+                    self._log.info(
+                        f"OI polling resumed for {instrument_id} after {waited:.1f}s wait",
+                    )
                 return instrument
-
-        self._log.warning(
-            f"OI polling gave up waiting for instrument {instrument_id} "
-            f"to appear in cache after {max_wait_secs:.1f}s",
-        )
-        return None
+            if waited >= next_warn_at:
+                self._log.warning(
+                    f"OI polling still waiting for instrument {instrument_id} "
+                    f"to appear in cache ({waited:.0f}s elapsed); will keep "
+                    f"retrying until cancelled",
+                )
+                warned_once = True
+                next_warn_at += warn_after_secs
 
     async def _open_interest_poll_loop(
         self,
@@ -455,14 +466,12 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
         interval_secs: int,
     ) -> None:
         # Subscriptions can be issued before `_connect()` finishes populating
-        # the instrument cache. Spin (with backoff) until the instrument
-        # shows up or the task is cancelled — exiting immediately would
-        # strand the subscription's bookkeeping with no active poller and no
-        # automatic retry.
+        # the instrument cache. Spin until the instrument shows up or the
+        # task is cancelled. There is intentionally no hard timeout —
+        # a slow-startup or reconnecting venue can legitimately take longer
+        # than any bounded wait, and exiting would silently strand the
+        # subscription. The task terminates only via `cancel()`.
         instrument = await self._wait_for_instrument_in_cache(instrument_id)
-        if instrument is None:
-            # Cancelled while waiting (disconnect/shutdown).
-            return
 
         backoff = 1.0
         symbol = instrument_id.symbol.value

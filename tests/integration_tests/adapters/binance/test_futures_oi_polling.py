@@ -507,6 +507,77 @@ async def test_oi_poll_loop_waits_for_instrument_cache_population(
 
 
 @pytest.mark.asyncio
+async def test_oi_poll_wait_has_no_hard_timeout(
+    event_loop,
+    binance_http_client,
+    monkeypatch,
+):
+    """Regression: the earlier 30s `max_wait_secs` timeout silently
+    stranded OI subscriptions on slow startup (a venue that took > 30s
+    to populate its instrument cache would leave the bucket dead with
+    no poller). The waiter now has no hard timeout — it keeps trying
+    until cancelled or until the instrument lands.
+
+    We patch the sleep to fast-forward virtual time, then run the
+    waiter for more than the old 30s limit without populating the
+    cache, and assert the task is still running (not exited).
+    """
+    data_client, cache = _make_client(event_loop)
+
+    btc = TestInstrumentProvider.btcusdt_binance()
+    # Instrument is intentionally NOT added to the cache.
+
+    # Fast-forward time: every real-time 0.5s sleep becomes ~0ms so we
+    # can simulate 60+ virtual seconds of waiting in the poll loop.
+    sleep_calls: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _instant_sleep(seconds: float, *args, **kwargs):
+        sleep_calls.append(seconds)
+        # Yield once so the loop can check the cache and re-enter sleep,
+        # but don't actually wait.
+        return await real_sleep(0)
+
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.binance.futures.data.asyncio.sleep",
+        _instant_sleep,
+    )
+
+    # Drive the wait helper directly and assert it doesn't return within
+    # a simulated window exceeding the old 30s hard limit. `wait_for`
+    # with 0.2s real time lets us give the task plenty of virtual
+    # iterations without blocking the test.
+    task = event_loop.create_task(
+        data_client._wait_for_instrument_in_cache(btc.id, poll_interval_secs=0.5)
+    )
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=0.2)
+        pytest.fail(
+            "waiter returned unexpectedly — it must keep polling past 30s"
+        )
+    except asyncio.TimeoutError:
+        pass
+
+    # The helper must still be running — old bug would have had it
+    # returning (and the task completing) well before 0.2s real time
+    # because the fast-forwarded sleeps simulate far more than 30s.
+    assert not task.done(), (
+        "wait-for-instrument helper exited early; old 30s hard timeout "
+        "would strand the subscription, new behavior waits until cancelled"
+    )
+    # Verify we actually simulated > 30s of virtual wait time.
+    assert sum(sleep_calls) > 30.0, (
+        f"test scaffolding failed to fast-forward enough virtual time; "
+        f"only simulated {sum(sleep_calls):.1f}s"
+    )
+
+    # Cancellation is the sole termination path.
+    task.cancel()
+    with pytest.raises((asyncio.CancelledError, BaseException)):
+        await task
+
+
+@pytest.mark.asyncio
 async def test_oi_poll_task_clears_entry_when_loop_completes(
     event_loop,
     binance_http_client,
