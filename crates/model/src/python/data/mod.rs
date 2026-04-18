@@ -26,6 +26,8 @@ pub mod depth;
 pub mod forward;
 pub mod funding;
 pub mod greeks;
+pub mod liquidation;
+pub mod open_interest;
 pub mod option_chain;
 pub mod order;
 pub mod prices;
@@ -48,8 +50,8 @@ use pyo3::{prelude::*, types::PyCapsule};
 use crate::data::DataFFI;
 use crate::data::{
     Bar, CustomData, Data, DataType, FundingRateUpdate, IndexPriceUpdate, InstrumentStatus,
-    MarkPriceUpdate, OrderBookDelta, QuoteTick, TradeTick, close::InstrumentClose,
-    is_monotonically_increasing_by_init, register_python_data_class,
+    Liquidation, MarkPriceUpdate, OpenInterest, OrderBookDelta, QuoteTick, TradeTick,
+    close::InstrumentClose, is_monotonically_increasing_by_init, register_python_data_class,
 };
 
 const ERROR_MONOTONICITY: &str = "`data` was not monotonically increasing by the `ts_init` field";
@@ -636,6 +638,42 @@ pub fn register_custom_data_class(data_class: &Bound<'_, PyAny>) -> PyResult<()>
     })?;
 
     Ok(())
+}
+
+/// Transforms the given Python objects into a vector of [`Liquidation`] objects.
+///
+/// # Errors
+///
+/// Returns a `PyErr` if element conversion fails or the data is not monotonically increasing.
+pub fn pyobjects_to_liquidations(data: Vec<Bound<'_, PyAny>>) -> PyResult<Vec<Liquidation>> {
+    let items: Vec<Liquidation> = data
+        .into_iter()
+        .map(|obj| Liquidation::from_pyobject(&obj))
+        .collect::<PyResult<Vec<Liquidation>>>()?;
+
+    if !is_monotonically_increasing_by_init(&items) {
+        return Err(to_pyvalue_err(ERROR_MONOTONICITY));
+    }
+
+    Ok(items)
+}
+
+/// Transforms the given Python objects into a vector of [`OpenInterest`] objects.
+///
+/// # Errors
+///
+/// Returns a `PyErr` if element conversion fails or the data is not monotonically increasing.
+pub fn pyobjects_to_open_interest(data: Vec<Bound<'_, PyAny>>) -> PyResult<Vec<OpenInterest>> {
+    let items: Vec<OpenInterest> = data
+        .into_iter()
+        .map(|obj| OpenInterest::from_pyobject(&obj))
+        .collect::<PyResult<Vec<OpenInterest>>>()?;
+
+    if !is_monotonically_increasing_by_init(&items) {
+        return Err(to_pyvalue_err(ERROR_MONOTONICITY));
+    }
+
+    Ok(items)
 }
 
 /// Transforms the given Python objects into a vector of [`FundingRateUpdate`] objects.

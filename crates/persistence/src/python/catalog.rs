@@ -40,6 +40,8 @@ fn data_to_pyobject(py: Python<'_>, item: Data) -> PyResult<Py<PyAny>> {
         Data::MarkPriceUpdate(price) => Py::new(py, price).map(|x| x.into_any()),
         Data::InstrumentStatus(status) => Py::new(py, status).map(|x| x.into_any()),
         Data::InstrumentClose(close) => Py::new(py, close).map(|x| x.into_any()),
+        Data::Liquidation(liq) => Py::new(py, liq).map(|x| x.into_any()),
+        Data::OpenInterest(oi) => Py::new(py, oi).map(|x| x.into_any()),
         Data::Custom(custom) => Py::new(py, custom).map(|x| x.into_any()),
     }
 }

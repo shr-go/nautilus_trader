@@ -26,6 +26,8 @@ pub mod depth;
 pub mod forward;
 pub mod funding;
 pub mod greeks;
+pub mod liquidation;
+pub mod open_interest;
 pub mod option_chain;
 pub mod order;
 pub mod prices;
@@ -70,6 +72,8 @@ pub use greeks::{
     BlackScholesGreeksResult, GreeksData, HasGreeks, OptionGreekValues, PortfolioGreeks,
     YieldCurveData, black_scholes_greeks, imply_vol_and_greeks, refine_vol_and_greeks,
 };
+pub use liquidation::Liquidation;
+pub use open_interest::OpenInterest;
 pub use option_chain::{OptionChainSlice, OptionGreeks, OptionStrikeData, StrikeRange};
 pub use order::{BookOrder, NULL_ORDER};
 pub use prices::{IndexPriceUpdate, MarkPriceUpdate};
@@ -105,6 +109,8 @@ pub enum Data {
     IndexPriceUpdate(IndexPriceUpdate), // TODO: Rename to IndexPrice once Cython gone
     InstrumentStatus(InstrumentStatus),
     InstrumentClose(InstrumentClose),
+    Liquidation(Liquidation),
+    OpenInterest(OpenInterest),
     Custom(CustomData),
 }
 
@@ -126,6 +132,8 @@ pub enum DataFFI {
     MarkPriceUpdate(MarkPriceUpdate),
     IndexPriceUpdate(IndexPriceUpdate),
     InstrumentClose(InstrumentClose),
+    Liquidation(Liquidation),
+    OpenInterest(OpenInterest),
 }
 
 #[cfg(feature = "ffi")]
@@ -146,6 +154,8 @@ impl TryFrom<Data> for DataFFI {
                 anyhow::bail!("Cannot convert Data::InstrumentStatus to DataFFI")
             }
             Data::InstrumentClose(x) => Ok(Self::InstrumentClose(x)),
+            Data::Liquidation(x) => Ok(Self::Liquidation(x)),
+            Data::OpenInterest(x) => Ok(Self::OpenInterest(x)),
             Data::Custom(_) => anyhow::bail!("Cannot convert Data::Custom to DataFFI"),
         }
     }
@@ -164,6 +174,8 @@ impl From<DataFFI> for Data {
             DataFFI::MarkPriceUpdate(x) => Self::MarkPriceUpdate(x),
             DataFFI::IndexPriceUpdate(x) => Self::IndexPriceUpdate(x),
             DataFFI::InstrumentClose(x) => Self::InstrumentClose(x),
+            DataFFI::Liquidation(x) => Self::Liquidation(x),
+            DataFFI::OpenInterest(x) => Self::OpenInterest(x),
         }
     }
 }
@@ -212,6 +224,12 @@ impl<'de> Deserialize<'de> for Data {
             "InstrumentClose" => Ok(Self::InstrumentClose(
                 serde_json::from_value(value).map_err(D::Error::custom)?,
             )),
+            "Liquidation" => Ok(Self::Liquidation(
+                serde_json::from_value(value).map_err(D::Error::custom)?,
+            )),
+            "OpenInterest" => Ok(Self::OpenInterest(
+                serde_json::from_value(value).map_err(D::Error::custom)?,
+            )),
             _ => {
                 if let Some(data) =
                     deserialize_custom_from_json(&type_name, &value).map_err(D::Error::custom)?
@@ -238,6 +256,8 @@ impl Clone for Data {
             Self::IndexPriceUpdate(x) => Self::IndexPriceUpdate(*x),
             Self::InstrumentStatus(x) => Self::InstrumentStatus(*x),
             Self::InstrumentClose(x) => Self::InstrumentClose(*x),
+            Self::Liquidation(x) => Self::Liquidation(*x),
+            Self::OpenInterest(x) => Self::OpenInterest(*x),
             Self::Custom(x) => Self::Custom(x.clone()),
         }
     }
@@ -256,6 +276,8 @@ impl PartialEq for Data {
             (Self::IndexPriceUpdate(a), Self::IndexPriceUpdate(b)) => a == b,
             (Self::InstrumentStatus(a), Self::InstrumentStatus(b)) => a == b,
             (Self::InstrumentClose(a), Self::InstrumentClose(b)) => a == b,
+            (Self::Liquidation(a), Self::Liquidation(b)) => a == b,
+            (Self::OpenInterest(a), Self::OpenInterest(b)) => a == b,
             (Self::Custom(a), Self::Custom(b)) => a == b,
             _ => false,
         }
@@ -278,6 +300,8 @@ impl Serialize for Data {
             Self::IndexPriceUpdate(x) => x.serialize(serializer),
             Self::InstrumentStatus(x) => x.serialize(serializer),
             Self::InstrumentClose(x) => x.serialize(serializer),
+            Self::Liquidation(x) => x.serialize(serializer),
+            Self::OpenInterest(x) => x.serialize(serializer),
             Self::Custom(x) => x.serialize(serializer),
         }
     }
@@ -318,6 +342,8 @@ impl_try_from_data!(MarkPriceUpdate, MarkPriceUpdate);
 impl_try_from_data!(IndexPriceUpdate, IndexPriceUpdate);
 impl_try_from_data!(InstrumentStatus, InstrumentStatus);
 impl_try_from_data!(InstrumentClose, InstrumentClose);
+impl_try_from_data!(Liquidation, Liquidation);
+impl_try_from_data!(OpenInterest, OpenInterest);
 
 /// Converts a vector of `Data` items to a specific variant type.
 ///
@@ -345,6 +371,8 @@ impl Data {
             Self::IndexPriceUpdate(index_price) => index_price.instrument_id,
             Self::InstrumentStatus(status) => status.instrument_id,
             Self::InstrumentClose(close) => close.instrument_id,
+            Self::Liquidation(liq) => liq.instrument_id,
+            Self::OpenInterest(oi) => oi.instrument_id,
             Self::Custom(custom) => custom
                 .data_type
                 .identifier()
@@ -414,6 +442,8 @@ impl_catalog_path_prefix!(MarkPriceUpdate, "mark_prices");
 impl_catalog_path_prefix!(FundingRateUpdate, "funding_rate_update");
 impl_catalog_path_prefix!(InstrumentStatus, "instrument_status");
 impl_catalog_path_prefix!(InstrumentClose, "instrument_closes");
+impl_catalog_path_prefix!(Liquidation, "liquidations");
+impl_catalog_path_prefix!(OpenInterest, "open_interest");
 
 use crate::instruments::InstrumentAny;
 impl_catalog_path_prefix!(InstrumentAny, "instruments");
@@ -431,6 +461,8 @@ impl HasTsInit for Data {
             Self::IndexPriceUpdate(p) => p.ts_init,
             Self::InstrumentStatus(s) => s.ts_init,
             Self::InstrumentClose(c) => c.ts_init,
+            Self::Liquidation(l) => l.ts_init,
+            Self::OpenInterest(o) => o.ts_init,
             Self::Custom(c) => c.data.ts_init(),
         }
     }
@@ -501,6 +533,18 @@ impl From<InstrumentStatus> for Data {
 impl From<InstrumentClose> for Data {
     fn from(value: InstrumentClose) -> Self {
         Self::InstrumentClose(value)
+    }
+}
+
+impl From<Liquidation> for Data {
+    fn from(value: Liquidation) -> Self {
+        Self::Liquidation(value)
+    }
+}
+
+impl From<OpenInterest> for Data {
+    fn from(value: OpenInterest) -> Self {
+        Self::OpenInterest(value)
     }
 }
 

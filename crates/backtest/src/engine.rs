@@ -913,7 +913,11 @@ impl BacktestEngine {
     fn route_data_to_exchange(&self, data: &Data) {
         if matches!(
             data,
-            Data::MarkPriceUpdate(_) | Data::IndexPriceUpdate(_) | Data::Custom(_)
+            Data::MarkPriceUpdate(_)
+                | Data::IndexPriceUpdate(_)
+                | Data::Liquidation(_)
+                | Data::OpenInterest(_)
+                | Data::Custom(_)
         ) {
             return;
         }
@@ -931,7 +935,11 @@ impl BacktestEngine {
                 Data::InstrumentStatus(status) => exchange.process_instrument_status(*status),
                 Data::InstrumentClose(close) => exchange.process_instrument_close(*close),
                 Data::Depth10(depth) => exchange.process_order_book_depth10(depth),
-                Data::MarkPriceUpdate(_) | Data::IndexPriceUpdate(_) | Data::Custom(_) => {
+                Data::MarkPriceUpdate(_)
+                | Data::IndexPriceUpdate(_)
+                | Data::Liquidation(_)
+                | Data::OpenInterest(_)
+                | Data::Custom(_) => {
                     unreachable!("filtered by early return above")
                 }
             }

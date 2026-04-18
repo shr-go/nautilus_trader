@@ -81,8 +81,8 @@ use nautilus_model::defi::DefiData;
 use nautilus_model::{
     data::{
         Bar, BarType, CustomData, Data, DataType, FundingRateUpdate, IndexPriceUpdate,
-        InstrumentClose, InstrumentStatus, MarkPriceUpdate, OrderBookDelta, OrderBookDeltas,
-        OrderBookDepth10, QuoteTick, TradeTick,
+        InstrumentClose, InstrumentStatus, Liquidation, MarkPriceUpdate, OpenInterest,
+        OrderBookDelta, OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
         option_chain::{OptionGreeks, StrikeRange},
     },
     enums::{
@@ -937,6 +937,8 @@ impl DataEngine {
                 self.drain_deferred_commands();
             }
             Data::InstrumentClose(close) => self.handle_instrument_close(close),
+            Data::Liquidation(liq) => self.handle_liquidation(liq),
+            Data::OpenInterest(oi) => self.handle_open_interest(oi),
             Data::Custom(custom) => self.handle_custom_data(&custom),
         }
     }
@@ -1252,6 +1254,16 @@ impl DataEngine {
     fn handle_instrument_close(&self, close: InstrumentClose) {
         let topic = switchboard::get_instrument_close_topic(close.instrument_id);
         msgbus::publish_any(topic, &close);
+    }
+
+    fn handle_liquidation(&self, liq: Liquidation) {
+        let topic = switchboard::get_liquidation_topic(liq.instrument_id);
+        msgbus::publish_any(topic, &liq);
+    }
+
+    fn handle_open_interest(&self, oi: OpenInterest) {
+        let topic = switchboard::get_open_interest_topic(oi.instrument_id);
+        msgbus::publish_any(topic, &oi);
     }
 
     fn handle_custom_data(&self, custom: &CustomData) {
