@@ -541,6 +541,168 @@ async fn test_subscribe_mark_prices() {
 
 #[rstest]
 #[tokio::test]
+async fn test_open_interest_poll_tasks_cleared_on_disconnect() {
+    // Mechanical guard for the lifecycle fix: after `disconnect`, the
+    // adapter's internal `oi_poll_tasks` dict MUST be empty, so a subsequent
+    // `connect` + `subscribe_open_interest` isn't short-circuited by a stale
+    // handle left over from the prior connection.
+    use nautilus_common::messages::data::SubscribeCustomData;
+    use nautilus_core::Params;
+    use nautilus_model::data::DataType;
+
+    let addr = start_data_test_server().await;
+    let base_url_http = format!("http://{addr}");
+    let base_url_ws = format!("ws://{addr}/ws");
+
+    let (mut client, _rx) = create_test_data_client(base_url_http, base_url_ws);
+    client.connect().await.unwrap();
+
+    let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+    let mut metadata = Params::new();
+    metadata.insert(
+        "instrument_id".to_string(),
+        serde_json::Value::String(instrument_id.to_string()),
+    );
+    metadata.insert("interval_secs".to_string(), serde_json::Value::from(5u64));
+    let data_type = DataType::new(stringify!(OpenInterest), Some(metadata), None);
+    let cmd = SubscribeCustomData {
+        data_type,
+        client_id: Some(ClientId::from("BINANCE")),
+        venue: Some(instrument_id.venue),
+        command_id: nautilus_core::UUID4::new(),
+        ts_init: UnixNanos::default(),
+        correlation_id: None,
+        params: None,
+    };
+    client.subscribe(cmd).unwrap();
+
+    // Precondition: exactly one task registered.
+    assert_eq!(client.oi_poll_task_count(), 1);
+
+    // Disconnect — must clear the dict (not merely cancel its token).
+    client.disconnect().await.unwrap();
+    assert_eq!(
+        client.oi_poll_task_count(),
+        0,
+        "disconnect must abort + clear every OI poll task",
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_open_interest_poll_survives_disconnect_reconnect_resubscribe() {
+    // Regression guard: an OI poll subscription must be cleanly torn down on
+    // disconnect and re-armed on a subsequent connect + subscribe. Previously
+    // the finished-but-not-yet-reaped task handle left in `oi_poll_tasks`
+    // could race with a fresh resubscribe, causing
+    // `start_open_interest_polling` to short-circuit and strand the actor
+    // with no poller.
+    use nautilus_common::messages::data::{SubscribeCustomData, UnsubscribeCustomData};
+    use nautilus_core::Params;
+    use nautilus_model::data::DataType;
+
+    let addr = start_data_test_server().await;
+    let base_url_http = format!("http://{addr}");
+    let base_url_ws = format!("ws://{addr}/ws");
+
+    let (mut client, mut rx) = create_test_data_client(base_url_http, base_url_ws);
+
+    client.connect().await.unwrap();
+    wait_until_async(
+        || {
+            let found = rx
+                .try_recv()
+                .is_ok_and(|e| matches!(e, DataEvent::Instrument(_)));
+            async move { found }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+    while rx.try_recv().is_ok() {}
+
+    let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+    let build_cmd = |interval: u64| -> SubscribeCustomData {
+        let mut metadata = Params::new();
+        metadata.insert(
+            "instrument_id".to_string(),
+            serde_json::Value::String(instrument_id.to_string()),
+        );
+        metadata.insert("interval_secs".to_string(), serde_json::Value::from(interval));
+        let data_type = DataType::new(stringify!(OpenInterest), Some(metadata), None);
+        SubscribeCustomData {
+            data_type,
+            client_id: Some(ClientId::from("BINANCE")),
+            venue: Some(instrument_id.venue),
+            command_id: nautilus_core::UUID4::new(),
+            ts_init: UnixNanos::default(),
+            correlation_id: None,
+            params: None,
+        }
+    };
+
+    // Subscribe once → expect at least one OI event.
+    client.subscribe(build_cmd(5)).unwrap();
+    wait_until_async(
+        || {
+            let found = rx.try_recv().is_ok_and(|e| matches!(e, DataEvent::Data(_)));
+            async move { found }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    // Disconnect: the lifecycle hook must abort and clear the OI poll task
+    // so the bucket dict is empty.
+    client.disconnect().await.unwrap();
+    while rx.try_recv().is_ok() {}
+
+    // Reconnect + resubscribe: a fresh poll task must spawn even though the
+    // prior handle may not have been reaped yet by tokio. If the adapter
+    // silently short-circuited, no new OI event would ever arrive.
+    client.connect().await.unwrap();
+    wait_until_async(
+        || {
+            let found = rx
+                .try_recv()
+                .is_ok_and(|e| matches!(e, DataEvent::Instrument(_)));
+            async move { found }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+    while rx.try_recv().is_ok() {}
+
+    client.subscribe(build_cmd(5)).unwrap();
+    wait_until_async(
+        || {
+            let found = rx.try_recv().is_ok_and(|e| matches!(e, DataEvent::Data(_)));
+            async move { found }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    // Clean up.
+    let mut metadata = Params::new();
+    metadata.insert(
+        "instrument_id".to_string(),
+        serde_json::Value::String(instrument_id.to_string()),
+    );
+    metadata.insert("interval_secs".to_string(), serde_json::Value::from(5u64));
+    let data_type = DataType::new(stringify!(OpenInterest), Some(metadata), None);
+    let _ = client.unsubscribe(&UnsubscribeCustomData {
+        data_type,
+        client_id: Some(ClientId::from("BINANCE")),
+        venue: Some(instrument_id.venue),
+        command_id: nautilus_core::UUID4::new(),
+        ts_init: UnixNanos::default(),
+        correlation_id: None,
+        params: None,
+    });
+}
+
+#[rstest]
+#[tokio::test]
 async fn test_subscribe_custom_data_open_interest_starts_rest_poll() {
     // Proves the Rust Binance adapter starts a REST poll task when a
     // `SubscribeCustomData` for `DataType(OpenInterest, {...})` arrives.

@@ -237,8 +237,14 @@ impl BinanceFuturesDataClient {
     }
 
     /// Starts (or leaves running) a REST poll loop for a single
-    /// (instrument_id, interval_secs) bucket. Idempotent — a second call
-    /// with the same key is a no-op while the task is alive.
+    /// (instrument_id, interval_secs) bucket.
+    ///
+    /// The bucket is considered "alive" when its task is in `_tasks` AND
+    /// hasn't finished. If the previous task is still draining after a
+    /// cancellation (mid-HTTP-call when disconnect cancelled the token),
+    /// evict it and spawn a fresh one — otherwise a fast
+    /// disconnect -> reconnect -> resubscribe sequence can race with the
+    /// old task's cancellation and silently strand the actor with no poller.
     fn start_open_interest_polling(
         &mut self,
         instrument_id: InstrumentId,
@@ -246,9 +252,26 @@ impl BinanceFuturesDataClient {
     ) {
         let key = (instrument_id, interval_secs);
         {
-            let tasks = self.oi_poll_tasks.lock().expect(MUTEX_POISONED);
-            if tasks.get(&key).is_some_and(|t| !t.is_finished()) {
-                return;
+            let mut tasks = self.oi_poll_tasks.lock().expect(MUTEX_POISONED);
+            match tasks.get(&key) {
+                Some(existing) if !existing.is_finished() => {
+                    // Still-running task belongs to the current connection:
+                    // reuse it unless the cancellation token has been tripped
+                    // (disconnect/stop/reset), in which case it's about to
+                    // exit and a fresh task must take over.
+                    if !self.cancellation_token.is_cancelled() {
+                        return;
+                    }
+                    // Abort the stale task right away so it does not race
+                    // with the fresh one we're about to spawn.
+                    if let Some(stale) = tasks.remove(&key) {
+                        stale.abort();
+                    }
+                }
+                Some(_finished) => {
+                    tasks.remove(&key);
+                }
+                None => {}
             }
         }
 
@@ -336,6 +359,26 @@ impl BinanceFuturesDataClient {
         if let Some(handle) = self.oi_poll_tasks.lock().expect(MUTEX_POISONED).remove(&key) {
             handle.abort();
         }
+    }
+
+    /// Aborts every running OI poll task and clears the bucket dict.
+    ///
+    /// Called from the lifecycle hooks (`stop` / `disconnect` / `reset`) so
+    /// that a subsequent `connect` + `subscribe_open_interest` is guaranteed
+    /// to spawn a fresh task — stale-task short-circuits in
+    /// `start_open_interest_polling` would otherwise strand the resubscribed
+    /// actor when the old task is mid-exit after a token cancel.
+    fn clear_open_interest_polling(&mut self) {
+        let mut tasks = self.oi_poll_tasks.lock().expect(MUTEX_POISONED);
+        for (_, handle) in tasks.drain() {
+            handle.abort();
+        }
+    }
+
+    /// Returns the number of tracked OI poll tasks — test-only visibility.
+    #[doc(hidden)]
+    pub fn oi_poll_task_count(&self) -> usize {
+        self.oi_poll_tasks.lock().expect(MUTEX_POISONED).len()
     }
 
     #[expect(clippy::too_many_arguments)]
@@ -964,6 +1007,7 @@ impl DataClient for BinanceFuturesDataClient {
     fn stop(&mut self) -> anyhow::Result<()> {
         log::info!("Stopping {id}", id = self.client_id);
         self.cancellation_token.cancel();
+        self.clear_open_interest_polling();
         self.is_connected.store(false, Ordering::Relaxed);
         Ok(())
     }
@@ -976,6 +1020,7 @@ impl DataClient for BinanceFuturesDataClient {
         for task in self.tasks.drain(..) {
             task.abort();
         }
+        self.clear_open_interest_polling();
 
         let mut ws = self.ws_client.clone();
         get_runtime().spawn(async move {
@@ -1215,6 +1260,7 @@ impl DataClient for BinanceFuturesDataClient {
         }
 
         self.cancellation_token.cancel();
+        self.clear_open_interest_polling();
 
         let _ = self.ws_client.close().await;
         let _ = self.ws_public_client.close().await;
