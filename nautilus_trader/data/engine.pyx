@@ -2784,18 +2784,37 @@ cdef class DataEngine(Component):
         self._msgbus.publish_c(topic=self._topic_cache.get_close_prices_topic(data.instrument_id, historical), msg=data)
 
     cpdef void _handle_liquidation(self, Liquidation data, bint historical = False):
-        # Canonical topic only; adapters drive per-subscription custom-data
-        # topic emissions (they know the exact metadata subscribers requested),
-        # which avoids duplicate delivery when both paths would match.
+        # Publish on both the canonical topic AND the default custom-data
+        # topic that `subscribe_data(DataType(Liquidation, {"instrument_id": X}))`
+        # subscribes to. The default emit must stay on the engine side so
+        # historical replay and non-adapter emissions still reach native
+        # subscribers; adapters skip the default-metadata CustomData to
+        # avoid duplicate delivery.
         self._msgbus.publish_c(
             topic=self._topic_cache.get_liquidations_topic(data.instrument_id, historical),
             msg=data,
         )
+        self._msgbus.publish_c(
+            topic=self._topic_cache.get_custom_data_topic(
+                DataType(Liquidation, metadata={"instrument_id": data.instrument_id}),
+                data.instrument_id,
+                historical,
+            ),
+            msg=data,
+        )
 
     cpdef void _handle_open_interest(self, OpenInterest data, bint historical = False):
-        # See _handle_liquidation — canonical topic only.
+        # See _handle_liquidation for the default-topic rationale.
         self._msgbus.publish_c(
             topic=self._topic_cache.get_open_interest_topic(data.instrument_id, historical),
+            msg=data,
+        )
+        self._msgbus.publish_c(
+            topic=self._topic_cache.get_custom_data_topic(
+                DataType(OpenInterest, metadata={"instrument_id": data.instrument_id}),
+                data.instrument_id,
+                historical,
+            ),
             msg=data,
         )
 

@@ -215,11 +215,20 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
             ts_init=ts_init,
         )
 
-        # Emit one CustomData per tracked subscription so topics match whatever
-        # metadata the subscriber used. Payload dispatches by `DataType.type`.
+        # Emit one CustomData per tracked subscription so topics match
+        # whatever metadata the subscriber used. Payload dispatches by
+        # `DataType.type`. For canonical `Liquidation` with the bare
+        # `{"instrument_id": ...}` metadata we skip the emit — the engine's
+        # `_handle_liquidation` already publishes on that default custom-data
+        # topic and a second emit here would deliver the event twice.
+        default_metadata = {"instrument_id": instrument_id}
         subscribed_types = self._liq_subscribed_data_types.get(instrument_id) or []
         emitted_any = False
         for dt in subscribed_types:
+            if dt.type is Liquidation and dt.metadata == default_metadata:
+                # Engine covers this exact topic — skip to avoid duplicate.
+                emitted_any = True
+                continue
             emitted_any = True
             if dt.type is BinanceLiquidation:
                 self._handle_data(CustomData(data_type=dt, data=binance_liq))
@@ -237,14 +246,15 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
                 CustomData(
                     data_type=DataType(
                         BinanceLiquidation,
-                        metadata={"instrument_id": instrument_id},
+                        metadata=default_metadata,
                     ),
                     data=binance_liq,
                 ),
             )
 
         # Always route the canonical object through the DataEngine so the
-        # `data.liquidations.{venue}.{symbol}` topic also fires.
+        # `data.liquidations.{venue}.{symbol}` topic and the default canonical
+        # custom-data topic (`data.Liquidation.instrument_id=...`) also fire.
         self._handle_data(liq)
 
     # -- LIQUIDATION SUBSCRIPTION TRACKING ------------------------------------------------------
@@ -376,12 +386,16 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
                 )
                 # Emit one CustomData per tracked subscription so the topic
                 # matches whatever metadata the subscriber used (with or
-                # without `interval_secs`). The payload is either the
-                # venue-specific `BinanceOpenInterest` or the canonical
-                # `OpenInterest` depending on the subscribed `DataType.type`.
+                # without `interval_secs`). Payload dispatches by
+                # `DataType.type`. Skip the canonical default — engine's
+                # `_handle_open_interest` already publishes on that topic.
+                default_metadata = {"instrument_id": instrument_id}
                 subscribed_types = self._oi_subscribed_data_types.get(instrument_id) or []
                 emitted_any = False
                 for dt in subscribed_types:
+                    if dt.type is OpenInterest and dt.metadata == default_metadata:
+                        emitted_any = True
+                        continue
                     emitted_any = True
                     if dt.type is BinanceOpenInterest:
                         self._handle_data(CustomData(data_type=dt, data=binance_oi))
@@ -399,15 +413,15 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
                         CustomData(
                             data_type=DataType(
                                 BinanceOpenInterest,
-                                metadata={"instrument_id": instrument_id},
+                                metadata=default_metadata,
                             ),
                             data=binance_oi,
                         ),
                     )
 
                 # Always route the canonical object through the DataEngine so
-                # the default `data.open_interest.{venue}.{symbol}` topic and
-                # the cache path still fire.
+                # the canonical `data.open_interest.{venue}.{symbol}` topic
+                # and the canonical default custom-data topic both fire.
                 self._handle_data(oi)
 
                 backoff = 1.0

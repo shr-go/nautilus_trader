@@ -174,6 +174,46 @@ async def test_oi_poll_tracks_subscribed_data_types(
     assert instrument_id not in data_client._oi_poll_tasks
 
 
+def _run_single_oi_emit(
+    data_client,
+    instrument,
+):
+    """Helper: drive exactly one OI poll cycle using tracked subscriptions."""
+    from nautilus_trader.adapters.binance.futures.schemas.market import (
+        BinanceFuturesOpenInterestResponse,
+    )
+
+    response = BinanceFuturesOpenInterestResponse(
+        symbol="BTCUSDT",
+        openInterest="1234.567",
+        time=1_700_000_000_000,
+    )
+    instrument_id = instrument.id
+    ts_init = 1
+    binance_oi = response.parse_to_binance_open_interest(
+        instrument_id=instrument_id,
+        size_precision=instrument.size_precision,
+        poll_interval_secs=10,
+        ts_init=ts_init,
+    )
+    canonical_oi = response.parse_to_open_interest(
+        instrument_id=instrument_id,
+        size_precision=instrument.size_precision,
+        ts_init=ts_init,
+    )
+
+    default_metadata = {"instrument_id": instrument_id}
+    subscribed_types = data_client._oi_subscribed_data_types.get(instrument_id) or []
+    for dt in subscribed_types:
+        if dt.type is CanonicalOpenInterest and dt.metadata == default_metadata:
+            continue  # engine covers this via _handle_open_interest's default emit
+        if dt.type is BinanceOpenInterest:
+            data_client._handle_data(_CustomData(data_type=dt, data=binance_oi))
+        elif dt.type is CanonicalOpenInterest:
+            data_client._handle_data(_CustomData(data_type=dt, data=canonical_oi))
+    data_client._handle_data(canonical_oi)
+
+
 @pytest.mark.asyncio
 async def test_canonical_open_interest_subscription_with_interval_secs_receives_events(
     event_loop,
@@ -200,63 +240,26 @@ async def test_canonical_open_interest_subscription_with_interval_secs_receives_
         clock=clock,
     )
 
-    # Capture every `_handle_data` call so the test can assert which CustomData
-    # variants (payload type + metadata) the poller emitted.
     emitted: list = []
     monkeypatch.setattr(data_client, "_handle_data", lambda d: emitted.append(d))
 
     btc = TestInstrumentProvider.btcusdt_binance()
-    instrument_id = btc.id
+    cache.add_instrument(btc)
+    instrument = cache.instrument(btc.id)
+    assert instrument is not None
 
-    # Simulate a canonical subscription with extra metadata
     canonical_dt = DataType(
         CanonicalOpenInterest,
-        metadata={"instrument_id": instrument_id, "interval_secs": 10},
+        metadata={"instrument_id": btc.id, "interval_secs": 10},
     )
     data_client._start_open_interest_polling(
-        instrument_id,
+        btc.id,
         interval_secs=10,
         data_type=canonical_dt,
     )
 
-    # Drive one poll cycle manually (no real HTTP call needed)
-    from nautilus_trader.adapters.binance.futures.schemas.market import (
-        BinanceFuturesOpenInterestResponse,
-    )
+    _run_single_oi_emit(data_client, instrument)
 
-    response = BinanceFuturesOpenInterestResponse(
-        symbol="BTCUSDT",
-        openInterest="1234.567",
-        time=1_700_000_000_000,
-    )
-    cache.add_instrument(btc)
-    instrument = cache.instrument(instrument_id)
-    assert instrument is not None
-
-    ts_init = clock.timestamp_ns()
-    binance_oi = response.parse_to_binance_open_interest(
-        instrument_id=instrument_id,
-        size_precision=instrument.size_precision,
-        poll_interval_secs=10,
-        ts_init=ts_init,
-    )
-    canonical_oi = response.parse_to_open_interest(
-        instrument_id=instrument_id,
-        size_precision=instrument.size_precision,
-        ts_init=ts_init,
-    )
-
-    # Inline the emit logic (tracked subscriptions → dispatch by dt.type)
-    subscribed_types = data_client._oi_subscribed_data_types[instrument_id]
-    for dt in subscribed_types:
-        if dt.type is BinanceOpenInterest:
-            data_client._handle_data(_CustomData(data_type=dt, data=binance_oi))
-        elif dt.type is CanonicalOpenInterest:
-            data_client._handle_data(_CustomData(data_type=dt, data=canonical_oi))
-    data_client._handle_data(canonical_oi)
-
-    # Assert: a CustomData was emitted with the EXACT subscriber metadata,
-    # carrying the canonical OpenInterest payload.
     custom_emits = [e for e in emitted if isinstance(e, _CustomData)]
     matching = [
         e for e in custom_emits
@@ -266,13 +269,77 @@ async def test_canonical_open_interest_subscription_with_interval_secs_receives_
         f"Expected one CustomData with canonical metadata {canonical_dt}, "
         f"got: {[(e.data_type, type(e.data).__name__) for e in custom_emits]}"
     )
-    # And the canonical object was also routed through the DataEngine path.
     canonical_emits = [e for e in emitted if isinstance(e, CanonicalOpenInterest)]
     assert len(canonical_emits) == 1
     assert canonical_emits[0].value == Quantity.from_str("1234.567")
 
-    # Cleanup
-    data_client._stop_open_interest_polling(instrument_id, data_type=canonical_dt)
+    data_client._stop_open_interest_polling(btc.id, data_type=canonical_dt)
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_canonical_open_interest_bare_subscription_is_not_duplicated(
+    event_loop,
+    binance_http_client,
+    monkeypatch,
+):
+    """When a subscriber uses the BARE default metadata (just instrument_id),
+    the engine's `_handle_open_interest` publishes on that default custom-data
+    topic. The adapter must NOT also emit a CustomData with the same metadata
+    or the subscriber would receive every sample twice."""
+    clock = LiveClock()
+    msgbus = MessageBus(trader_id=TestIdStubs.trader_id(), clock=clock)
+    cache = Cache(database=MockCacheDatabase())
+
+    data_client = BinanceLiveDataClientFactory.create(
+        loop=event_loop,
+        name="BINANCE",
+        config=BinanceDataClientConfig(
+            api_key="SOME_BINANCE_API_KEY",  # noqa: S106
+            api_secret="SOME_BINANCE_API_SECRET",  # noqa: S106
+            account_type=BinanceAccountType.USDT_FUTURES,
+        ),
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+    )
+
+    emitted: list = []
+    monkeypatch.setattr(data_client, "_handle_data", lambda d: emitted.append(d))
+
+    btc = TestInstrumentProvider.btcusdt_binance()
+    cache.add_instrument(btc)
+    instrument = cache.instrument(btc.id)
+
+    # Bare canonical subscription: metadata has only instrument_id.
+    bare_dt = DataType(
+        CanonicalOpenInterest,
+        metadata={"instrument_id": btc.id},
+    )
+    data_client._start_open_interest_polling(
+        btc.id,
+        interval_secs=5,
+        data_type=bare_dt,
+    )
+
+    _run_single_oi_emit(data_client, instrument)
+
+    # No CustomData with the bare-canonical metadata should have been emitted —
+    # the engine handles that default topic itself.
+    duplicate_emits = [
+        e for e in emitted
+        if isinstance(e, _CustomData) and e.data_type == bare_dt
+    ]
+    assert len(duplicate_emits) == 0, (
+        "Adapter must not emit a CustomData on the default canonical topic; "
+        "the engine's _handle_open_interest already publishes there."
+    )
+
+    # The canonical OpenInterest object is still routed through the engine.
+    canonical_emits = [e for e in emitted if isinstance(e, CanonicalOpenInterest)]
+    assert len(canonical_emits) == 1
+
+    data_client._stop_open_interest_polling(btc.id, data_type=bare_dt)
     await asyncio.sleep(0)
 
 
