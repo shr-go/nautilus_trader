@@ -15,13 +15,13 @@
 
 //! A canonical `Liquidation` data type representing a forced-liquidation order event.
 
-use std::{any::Any, collections::HashMap, fmt::Display, hash::Hash, sync::Arc};
+use std::{collections::HashMap, fmt::Display, hash::Hash};
 
 use indexmap::IndexMap;
 use nautilus_core::{UnixNanos, serialization::Serializable};
 use serde::{Deserialize, Serialize};
 
-use super::{CustomDataTrait, HasTsInit};
+use super::HasTsInit;
 use crate::{
     enums::{OrderSide, OrderStatus},
     identifiers::InstrumentId,
@@ -134,48 +134,6 @@ impl Serializable for Liquidation {}
 impl HasTsInit for Liquidation {
     fn ts_init(&self) -> UnixNanos {
         self.ts_init
-    }
-}
-
-/// Enables wrapping `Liquidation` in a `CustomData` envelope so that Rust
-/// actors can receive events via `subscribe_data(DataType(Liquidation, ...))`.
-/// The message bus uses a typed handler of `&CustomData`, so the raw type
-/// would silently fail type-match on that subscription path.
-impl CustomDataTrait for Liquidation {
-    fn type_name(&self) -> &'static str {
-        stringify!(Liquidation)
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn ts_event(&self) -> UnixNanos {
-        self.ts_event
-    }
-
-    fn to_json(&self) -> anyhow::Result<String> {
-        Ok(serde_json::to_string(self)?)
-    }
-
-    fn clone_arc(&self) -> Arc<dyn CustomDataTrait> {
-        Arc::new(*self)
-    }
-
-    fn eq_arc(&self, other: &dyn CustomDataTrait) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<Self>()
-            .is_some_and(|o| self == o)
-    }
-
-    fn type_name_static() -> &'static str {
-        stringify!(Liquidation)
-    }
-
-    fn from_json(value: serde_json::Value) -> anyhow::Result<Arc<dyn CustomDataTrait>> {
-        let parsed: Self = serde_json::from_value(value)?;
-        Ok(Arc::new(parsed))
     }
 }
 

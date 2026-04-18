@@ -70,7 +70,7 @@ use nautilus_common::{
     timer::{TimeEvent, TimeEventCallback},
 };
 use nautilus_core::{
-    Params, UUID4, WeakCell,
+    UUID4, WeakCell,
     correctness::{
         FAILED, check_key_in_map, check_key_not_in_map, check_predicate_false, check_predicate_true,
     },
@@ -1256,59 +1256,33 @@ impl DataEngine {
         msgbus::publish_any(topic, &close);
     }
 
+    // NOTE: Rust-side `subscribe_data(DataType(Liquidation|OpenInterest, {...}))`
+    // is intentionally NOT supported. Wrapping these canonical types in
+    // `CustomData` to hit the custom-data topic would force them through the
+    // `CustomDataEnvelope` JSON shape and break canonical JSON round-trip
+    // (the outer `"type": "Liquidation"` no longer parses back to
+    // `Data::Liquidation`). Rust subscribers must listen on the canonical
+    // topic directly via
+    //   `msgbus::subscribe_any(switchboard::get_liquidation_topic(id), ...)`
+    // or use a dedicated typed subscribe helper (follow-up, mirrors the
+    // `subscribe_mark_prices` pattern). Python-side `subscribe_data` still
+    // works because the Python adapter emits a wrapped `CustomData` and the
+    // Python `DataEngine._handle_open_interest` / `_handle_liquidation` also
+    // publish on the default custom-data topic directly — see engine.pyx.
     fn handle_liquidation(&self, liq: Liquidation) {
-        // Canonical topic
         let topic = switchboard::get_liquidation_topic(liq.instrument_id);
         msgbus::publish_any(topic, &liq);
-
-        // Default custom-data topic — `DataActor::subscribe_data(DataType(
-        // Liquidation, {"instrument_id": X}))` registers a
-        // `TypedHandler<CustomData>` on `get_custom_topic(&data_type)`, so
-        // the payload must be wrapped in a `CustomData` envelope or the
-        // handler's downcast fails silently.
-        let data_type = DataType::new(
-            stringify!(Liquidation),
-            Some(Self::instrument_id_params(liq.instrument_id)),
-            None,
-        );
-        let custom_topic = switchboard::get_custom_topic(&data_type);
-        let custom =
-            nautilus_model::data::CustomData::new(std::sync::Arc::new(liq), data_type);
-        msgbus::publish_any(custom_topic, &custom);
     }
 
     fn handle_open_interest(&self, oi: OpenInterest) {
-        // Canonical topic
         let topic = switchboard::get_open_interest_topic(oi.instrument_id);
         msgbus::publish_any(topic, &oi);
-
-        // Default custom-data topic — see `handle_liquidation` for rationale.
-        let data_type = DataType::new(
-            stringify!(OpenInterest),
-            Some(Self::instrument_id_params(oi.instrument_id)),
-            None,
-        );
-        let custom_topic = switchboard::get_custom_topic(&data_type);
-        let custom =
-            nautilus_model::data::CustomData::new(std::sync::Arc::new(oi), data_type);
-        msgbus::publish_any(custom_topic, &custom);
     }
 
     fn handle_custom_data(&self, custom: &CustomData) {
         log::debug!("Processing custom data: {}", custom.data.type_name());
         let topic = switchboard::get_custom_topic(&custom.data_type);
         msgbus::publish_any(topic, custom);
-    }
-
-    /// Builds a `Params` carrying a single `instrument_id` entry — used by
-    /// canonical-type dispatchers when composing a default custom-data topic.
-    fn instrument_id_params(instrument_id: InstrumentId) -> Params {
-        let mut params = Params::new();
-        params.insert(
-            "instrument_id".to_string(),
-            serde_json::Value::String(instrument_id.to_string()),
-        );
-        params
     }
 
     /// Drains deferred subscribe/unsubscribe commands pushed by option chain

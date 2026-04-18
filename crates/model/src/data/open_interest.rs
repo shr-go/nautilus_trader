@@ -15,13 +15,13 @@
 
 //! A canonical `OpenInterest` data type representing a venue open-interest sample.
 
-use std::{any::Any, collections::HashMap, fmt::Display, hash::Hash, sync::Arc};
+use std::{collections::HashMap, fmt::Display, hash::Hash};
 
 use indexmap::IndexMap;
 use nautilus_core::{UnixNanos, serialization::Serializable};
 use serde::{Deserialize, Serialize};
 
-use super::{CustomDataTrait, HasTsInit};
+use super::HasTsInit;
 use crate::{
     identifiers::InstrumentId,
     types::{Quantity, fixed::FIXED_SIZE_BINARY},
@@ -105,46 +105,6 @@ impl Serializable for OpenInterest {}
 impl HasTsInit for OpenInterest {
     fn ts_init(&self) -> UnixNanos {
         self.ts_init
-    }
-}
-
-/// See `Liquidation`'s `CustomDataTrait` impl for the rationale — lets Rust
-/// `subscribe_data(DataType(OpenInterest, ...))` actually deliver events.
-impl CustomDataTrait for OpenInterest {
-    fn type_name(&self) -> &'static str {
-        stringify!(OpenInterest)
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn ts_event(&self) -> UnixNanos {
-        self.ts_event
-    }
-
-    fn to_json(&self) -> anyhow::Result<String> {
-        Ok(serde_json::to_string(self)?)
-    }
-
-    fn clone_arc(&self) -> Arc<dyn CustomDataTrait> {
-        Arc::new(*self)
-    }
-
-    fn eq_arc(&self, other: &dyn CustomDataTrait) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<Self>()
-            .is_some_and(|o| self == o)
-    }
-
-    fn type_name_static() -> &'static str {
-        stringify!(OpenInterest)
-    }
-
-    fn from_json(value: serde_json::Value) -> anyhow::Result<Arc<dyn CustomDataTrait>> {
-        let parsed: Self = serde_json::from_value(value)?;
-        Ok(Arc::new(parsed))
     }
 }
 
