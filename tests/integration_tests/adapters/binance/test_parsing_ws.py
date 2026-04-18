@@ -22,11 +22,15 @@ from nautilus_trader.adapters.binance.common.enums import BinanceExecutionType
 from nautilus_trader.adapters.binance.common.enums import BinanceOrderStatus
 from nautilus_trader.adapters.binance.common.schemas.market import BinanceTickerData
 from nautilus_trader.adapters.binance.futures.enums import BinanceFuturesEnumParser
+from nautilus_trader.adapters.binance.futures.schemas.market import BinanceFuturesForceOrderMsg
 from nautilus_trader.adapters.binance.futures.schemas.user import BinanceFuturesAlgoUpdateWrapper
 from nautilus_trader.adapters.binance.futures.schemas.user import BinanceFuturesTradeLiteMsg
+from nautilus_trader.adapters.binance.futures.types import BinanceLiquidation
 from nautilus_trader.adapters.binance.spot.enums import BinanceSpotEnumParser
 from nautilus_trader.adapters.binance.spot.schemas.user import BinanceSpotOrderUpdateWrapper
 from nautilus_trader.core.datetime import millis_to_nanos
+from nautilus_trader.model.data import Liquidation
+from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
@@ -56,6 +60,64 @@ class TestBinanceWebSocketParsing:
 
         # Assert
         assert result.instrument_id == ETHUSDT.id
+
+    def test_parse_futures_force_order_to_liquidation(self):
+        # Arrange
+        raw = pkgutil.get_data(
+            package="tests.integration_tests.adapters.binance.resources.ws_messages",
+            resource="ws_futures_force_order.json",
+        )
+        assert raw
+
+        # Act
+        decoder = msgspec.json.Decoder(BinanceFuturesForceOrderMsg)
+        msg = decoder.decode(raw)
+        ts_init = 1_700_000_000_000_000_000
+        btcusdt = TestInstrumentProvider.btcusdt_binance()
+
+        liq = msg.data.parse_to_liquidation(
+            instrument_id=btcusdt.id,
+            price_precision=btcusdt.price_precision,
+            size_precision=btcusdt.size_precision,
+            ts_init=ts_init,
+        )
+
+        # Assert
+        assert isinstance(liq, Liquidation)
+        assert liq.instrument_id == btcusdt.id
+        assert liq.side == OrderSide.SELL
+        assert liq.order_status == OrderStatus.FILLED
+        assert liq.ts_init == ts_init
+        assert liq.ts_event == millis_to_nanos(1_568_014_460_893)
+
+    def test_parse_futures_force_order_to_binance_liquidation(self):
+        # Arrange
+        raw = pkgutil.get_data(
+            package="tests.integration_tests.adapters.binance.resources.ws_messages",
+            resource="ws_futures_force_order.json",
+        )
+        assert raw
+
+        # Act
+        decoder = msgspec.json.Decoder(BinanceFuturesForceOrderMsg)
+        msg = decoder.decode(raw)
+        ts_init = 1_700_000_000_000_000_000
+        btcusdt = TestInstrumentProvider.btcusdt_binance()
+
+        binance_liq = msg.data.parse_to_binance_liquidation(
+            instrument_id=btcusdt.id,
+            price_precision=btcusdt.price_precision,
+            size_precision=btcusdt.size_precision,
+            ts_init=ts_init,
+        )
+
+        # Assert
+        assert isinstance(binance_liq, BinanceLiquidation)
+        assert binance_liq.order_type == "LIMIT"
+        assert binance_liq.time_in_force == "IOC"
+        assert binance_liq.trade_time_ms == 1_568_014_460_893
+        assert float(binance_liq.accumulated_qty) == 0.014
+        assert float(binance_liq.last_filled_qty) == 0.014
 
     def test_parse_trade_lite(self):
         # Arrange

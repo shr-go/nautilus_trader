@@ -35,6 +35,8 @@ from nautilus_trader.adapters.binance.common.types import BinanceBar
 from nautilus_trader.adapters.binance.common.types import BinanceTicker
 from nautilus_trader.adapters.binance.config import BinanceDataClientConfig
 from nautilus_trader.adapters.binance.futures.types import BinanceFuturesMarkPriceUpdate
+from nautilus_trader.adapters.binance.futures.types import BinanceLiquidation
+from nautilus_trader.adapters.binance.futures.types import BinanceOpenInterest
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
 from nautilus_trader.adapters.binance.http.error import BinanceError
 from nautilus_trader.adapters.binance.http.market import BinanceMarketHttpAPI
@@ -76,6 +78,8 @@ from nautilus_trader.model.data import BarSpecification
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import DataType
+from nautilus_trader.model.data import Liquidation
+from nautilus_trader.model.data import OpenInterest
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import QuoteTick
@@ -330,6 +334,23 @@ class BinanceCommonDataClient(LiveMarketDataClient):
                 return
             mark_price_symbol = instrument_id.symbol.value if instrument_id else None
             await self._ws_client.subscribe_mark_price(mark_price_symbol, speed=1000)
+        elif command.data_type.type in (BinanceLiquidation, Liquidation):
+            if not self._binance_account_type.is_futures:
+                self._log.error(
+                    "Cannot subscribe to liquidation stream "
+                    f"for {self._binance_account_type.value} account types",
+                )
+                return
+            await self._ws_client.subscribe_force_orders(instrument_id.symbol.value)
+        elif command.data_type.type in (BinanceOpenInterest, OpenInterest):
+            if not self._binance_account_type.is_futures:
+                self._log.error(
+                    "Cannot subscribe to open interest "
+                    f"for {self._binance_account_type.value} account types",
+                )
+                return
+            interval_secs = command.data_type.metadata.get("interval_secs")
+            self._start_open_interest_polling(instrument_id, interval_secs)
         else:
             self._log.error(
                 f"Cannot subscribe to {command.data_type.type} (not implemented)",
@@ -356,6 +377,14 @@ class BinanceCommonDataClient(LiveMarketDataClient):
                     f"for {self._binance_account_type.value} account types",
                 )
                 return
+        elif command.data_type.type in (BinanceLiquidation, Liquidation):
+            if not self._binance_account_type.is_futures:
+                return
+            await self._ws_client.unsubscribe_force_orders(instrument_id.symbol.value)
+        elif command.data_type.type in (BinanceOpenInterest, OpenInterest):
+            if not self._binance_account_type.is_futures:
+                return
+            self._stop_open_interest_polling(instrument_id)
         else:
             self._log.error(
                 f"Cannot unsubscribe from {command.data_type.type} (not implemented)",

@@ -17,6 +17,7 @@ from decimal import Decimal
 
 import msgspec
 
+from nautilus_trader.adapters.binance.common.enums import BinanceOrderStatus
 from nautilus_trader.adapters.binance.common.enums import BinanceOrderType
 from nautilus_trader.adapters.binance.common.enums import BinanceTimeInForce
 from nautilus_trader.adapters.binance.common.schemas.market import BinanceExchangeFilter
@@ -24,10 +25,16 @@ from nautilus_trader.adapters.binance.common.schemas.market import BinanceRateLi
 from nautilus_trader.adapters.binance.common.schemas.market import BinanceSymbolFilter
 from nautilus_trader.adapters.binance.futures.enums import BinanceFuturesContractStatus
 from nautilus_trader.adapters.binance.futures.types import BinanceFuturesMarkPriceUpdate
+from nautilus_trader.adapters.binance.futures.types import BinanceLiquidation
+from nautilus_trader.adapters.binance.futures.types import BinanceOpenInterest
 from nautilus_trader.core.datetime import millis_to_nanos
+from nautilus_trader.model.data import Liquidation
+from nautilus_trader.model.data import OpenInterest
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.enums import AggressorSide
 from nautilus_trader.model.enums import CurrencyType
+from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.objects import Currency
@@ -257,3 +264,136 @@ class BinanceFuturesMarkPriceAllMsg(msgspec.Struct, frozen=True):
 
     stream: str
     data: list[BinanceFuturesMarkPriceData]
+
+
+_BINANCE_ORDER_STATUS_TO_NAUTILUS: dict[BinanceOrderStatus, OrderStatus] = {
+    BinanceOrderStatus.NEW: OrderStatus.ACCEPTED,
+    BinanceOrderStatus.PARTIALLY_FILLED: OrderStatus.PARTIALLY_FILLED,
+    BinanceOrderStatus.FILLED: OrderStatus.FILLED,
+    BinanceOrderStatus.CANCELED: OrderStatus.CANCELED,
+    BinanceOrderStatus.PENDING_CANCEL: OrderStatus.PENDING_CANCEL,
+    BinanceOrderStatus.REJECTED: OrderStatus.REJECTED,
+    BinanceOrderStatus.EXPIRED: OrderStatus.EXPIRED,
+    BinanceOrderStatus.EXPIRED_IN_MATCH: OrderStatus.CANCELED,
+    BinanceOrderStatus.NEW_ADL: OrderStatus.FILLED,
+    BinanceOrderStatus.NEW_INSURANCE: OrderStatus.FILLED,
+}
+
+
+def _map_order_status(status: BinanceOrderStatus) -> OrderStatus:
+    return _BINANCE_ORDER_STATUS_TO_NAUTILUS.get(status, OrderStatus.ACCEPTED)
+
+
+class BinanceFuturesForceOrderInner(msgspec.Struct, frozen=True):
+    """
+    Inner force-order payload nested under `o` in the forceOrder stream.
+    """
+
+    s: str  # Symbol
+    S: str  # Side (BUY / SELL)
+    o: str  # Order type (e.g. LIMIT)
+    f: str  # Time in force (e.g. IOC)
+    q: str  # Original quantity
+    p: str  # Price
+    ap: str  # Average price
+    X: BinanceOrderStatus  # Order status
+    l: str  # Last filled quantity
+    z: str  # Accumulated filled quantity
+    T: int  # Trade time (ms)
+
+
+class BinanceFuturesForceOrderData(msgspec.Struct, frozen=True):
+    """
+    Top-level data struct inside a Binance Futures forceOrder stream message.
+    """
+
+    e: str  # Event type (`forceOrder`)
+    E: int  # Event time (ms)
+    o: BinanceFuturesForceOrderInner
+
+    def parse_to_liquidation(
+        self,
+        instrument_id: InstrumentId,
+        price_precision: int,
+        size_precision: int,
+        ts_init: int,
+    ) -> Liquidation:
+        return Liquidation(
+            instrument_id=instrument_id,
+            side=OrderSide.BUY if self.o.S == "BUY" else OrderSide.SELL,
+            quantity=Quantity(float(self.o.q), size_precision),
+            price=Price(float(self.o.p), price_precision),
+            order_status=_map_order_status(self.o.X),
+            ts_event=millis_to_nanos(self.E),
+            ts_init=ts_init,
+        )
+
+    def parse_to_binance_liquidation(
+        self,
+        instrument_id: InstrumentId,
+        price_precision: int,
+        size_precision: int,
+        ts_init: int,
+    ) -> BinanceLiquidation:
+        return BinanceLiquidation(
+            instrument_id=instrument_id,
+            side=OrderSide.BUY if self.o.S == "BUY" else OrderSide.SELL,
+            quantity=Quantity(float(self.o.q), size_precision),
+            price=Price(float(self.o.p), price_precision),
+            avg_price=Price(float(self.o.ap), price_precision),
+            order_status=_map_order_status(self.o.X),
+            order_type=self.o.o,
+            time_in_force=self.o.f,
+            last_filled_qty=Quantity(float(self.o.l), size_precision),
+            accumulated_qty=Quantity(float(self.o.z), size_precision),
+            trade_time_ms=self.o.T,
+            ts_event=millis_to_nanos(self.E),
+            ts_init=ts_init,
+        )
+
+
+class BinanceFuturesForceOrderMsg(msgspec.Struct, frozen=True):
+    """
+    WebSocket message for a Binance Futures per-symbol `forceOrder` event.
+    """
+
+    stream: str
+    data: BinanceFuturesForceOrderData
+
+
+class BinanceFuturesOpenInterestResponse(msgspec.Struct, frozen=True):
+    """
+    REST response shape from `GET /fapi/v1/openInterest`.
+    """
+
+    symbol: str
+    openInterest: str
+    time: int
+
+    def parse_to_open_interest(
+        self,
+        instrument_id: InstrumentId,
+        size_precision: int,
+        ts_init: int,
+    ) -> OpenInterest:
+        return OpenInterest(
+            instrument_id=instrument_id,
+            value=Quantity(float(self.openInterest), size_precision),
+            ts_event=millis_to_nanos(self.time),
+            ts_init=ts_init,
+        )
+
+    def parse_to_binance_open_interest(
+        self,
+        instrument_id: InstrumentId,
+        size_precision: int,
+        poll_interval_secs: int,
+        ts_init: int,
+    ) -> BinanceOpenInterest:
+        return BinanceOpenInterest(
+            instrument_id=instrument_id,
+            value=Quantity(float(self.openInterest), size_precision),
+            poll_interval_secs=poll_interval_secs,
+            ts_event=millis_to_nanos(self.time),
+            ts_init=ts_init,
+        )

@@ -17,7 +17,11 @@ import msgspec
 
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
 from nautilus_trader.adapters.binance.common.enums import BinanceSecurityType
+from nautilus_trader.adapters.binance.common.symbol import BinanceSymbol
 from nautilus_trader.adapters.binance.futures.schemas.market import BinanceFuturesExchangeInfo
+from nautilus_trader.adapters.binance.futures.schemas.market import (
+    BinanceFuturesOpenInterestResponse,
+)
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
 from nautilus_trader.adapters.binance.http.endpoint import BinanceHttpEndpoint
 from nautilus_trader.adapters.binance.http.market import BinanceMarketHttpAPI
@@ -60,6 +64,45 @@ class BinanceFuturesExchangeInfoHttp(BinanceHttpEndpoint):
         return self._get_resp_decoder.decode(raw)
 
 
+class BinanceFuturesOpenInterestHttp(BinanceHttpEndpoint):
+    """
+    Endpoint for Binance Futures open interest.
+
+    `GET /fapi/v1/openInterest`
+    `GET /dapi/v1/openInterest`
+
+    References
+    ----------
+    https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Open-Interest
+
+    """
+
+    class GetParameters(msgspec.Struct, omit_defaults=True, frozen=True):
+        symbol: BinanceSymbol
+
+    def __init__(
+        self,
+        client: BinanceHttpClient,
+        base_endpoint: str,
+    ):
+        methods = {
+            HttpMethod.GET: BinanceSecurityType.NONE,
+        }
+        url_path = base_endpoint + "openInterest"
+        super().__init__(
+            client,
+            methods,
+            url_path,
+        )
+        self._get_resp_decoder = msgspec.json.Decoder(BinanceFuturesOpenInterestResponse)
+
+    async def get(self, symbol: str) -> BinanceFuturesOpenInterestResponse:
+        method_type = HttpMethod.GET
+        params = self.GetParameters(symbol=BinanceSymbol(symbol))
+        raw = await self._method(method_type, params)
+        return self._get_resp_decoder.decode(raw)
+
+
 class BinanceFuturesMarketHttpAPI(BinanceMarketHttpAPI):
     """
     Provides access to the Binance Futures HTTP REST API.
@@ -92,9 +135,19 @@ class BinanceFuturesMarketHttpAPI(BinanceMarketHttpAPI):
             client,
             self.base_endpoint,
         )
+        self._endpoint_futures_open_interest = BinanceFuturesOpenInterestHttp(
+            client,
+            self.base_endpoint,
+        )
 
     async def query_futures_exchange_info(self) -> BinanceFuturesExchangeInfo:
         """
         Retrieve Binance Futures exchange information.
         """
         return await self._endpoint_futures_exchange_info.get()
+
+    async def query_open_interest(self, symbol: str) -> BinanceFuturesOpenInterestResponse:
+        """
+        Retrieve the current open interest for the given symbol.
+        """
+        return await self._endpoint_futures_open_interest.get(symbol)
