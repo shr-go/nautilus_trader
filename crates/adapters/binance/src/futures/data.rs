@@ -16,7 +16,7 @@
 //! Live market data client implementation for the Binance Futures adapter.
 
 use std::sync::{
-    Arc, RwLock,
+    Arc, Mutex, RwLock,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -47,7 +47,10 @@ use nautilus_core::{
     time::{AtomicTime, get_atomic_clock_realtime},
 };
 use nautilus_model::{
-    data::{BookOrder, Data, OrderBookDelta, OrderBookDeltas, OrderBookDeltas_API},
+    data::{
+        BookOrder, Data, DataType, OpenInterest, OrderBookDelta, OrderBookDeltas,
+        OrderBookDeltas_API,
+    },
     enums::{BookAction, BookType, MarketStatusAction, OrderSide, RecordFlag},
     identifiers::{ClientId, InstrumentId, Venue},
     instruments::{Instrument, InstrumentAny},
@@ -69,7 +72,8 @@ use crate::{
     config::BinanceDataClientConfig,
     futures::{
         http::{
-            client::BinanceFuturesHttpClient, models::BinanceOrderBook, query::BinanceDepthParams,
+            client::BinanceFuturesHttpClient, models::BinanceOrderBook,
+            query::{BinanceDepthParams, BinanceOpenInterestParams},
         },
         websocket::streams::{
             client::BinanceFuturesWebSocketClient,
@@ -124,6 +128,10 @@ pub struct BinanceFuturesDataClient {
     book_buffers: Arc<AtomicMap<InstrumentId, BookBuffer>>,
     book_subscriptions: Arc<AtomicMap<InstrumentId, u32>>,
     mark_price_refs: Arc<AtomicMap<InstrumentId, u32>>,
+    // Open-interest REST polling: keyed by (instrument_id, interval_secs)
+    // so distinct cadences on the same instrument each get their own task
+    // and can be cancelled independently on unsubscribe.
+    oi_poll_tasks: Arc<Mutex<AHashMap<(InstrumentId, u32), JoinHandle<()>>>>,
     book_epoch: Arc<RwLock<u64>>,
 }
 
@@ -202,6 +210,7 @@ impl BinanceFuturesDataClient {
             book_buffers: Arc::new(AtomicMap::new()),
             book_subscriptions: Arc::new(AtomicMap::new()),
             mark_price_refs: Arc::new(AtomicMap::new()),
+            oi_poll_tasks: Arc::new(Mutex::new(AHashMap::new())),
             book_epoch: Arc::new(RwLock::new(0)),
         })
     }
@@ -225,6 +234,108 @@ impl BinanceFuturesDataClient {
                 log::error!("{context}: {e:?}");
             }
         });
+    }
+
+    /// Starts (or leaves running) a REST poll loop for a single
+    /// (instrument_id, interval_secs) bucket. Idempotent — a second call
+    /// with the same key is a no-op while the task is alive.
+    fn start_open_interest_polling(
+        &mut self,
+        instrument_id: InstrumentId,
+        interval_secs: u32,
+    ) {
+        let key = (instrument_id, interval_secs);
+        {
+            let tasks = self.oi_poll_tasks.lock().expect(MUTEX_POISONED);
+            if tasks.get(&key).is_some_and(|t| !t.is_finished()) {
+                return;
+            }
+        }
+
+        let http = self.http_client.clone();
+        let sender = self.data_sender.clone();
+        let instruments = self.instruments.clone();
+        let cancellation = self.cancellation_token.clone();
+        let clock = get_atomic_clock_realtime();
+
+        let handle = get_runtime().spawn(async move {
+            let mut backoff = std::time::Duration::from_secs(1);
+            let cap = std::time::Duration::from_secs(60);
+            loop {
+                if cancellation.is_cancelled() {
+                    return;
+                }
+
+                let params = BinanceOpenInterestParams {
+                    symbol: format_binance_stream_symbol(&instrument_id).to_uppercase(),
+                };
+
+                match http.open_interest(&params).await {
+                    Ok(response) => {
+                        if let Some(instrument) = instruments.load().get(&instrument_id) {
+                            let ts_event = UnixNanos::from(
+                                (response.time as u64) * NANOSECONDS_IN_MILLISECOND,
+                            );
+                            let ts_init = clock.get_time_ns();
+                            match response.open_interest.parse::<f64>() {
+                                Ok(value) => {
+                                    let oi = OpenInterest::new(
+                                        instrument.id(),
+                                        Quantity::new(value, instrument.size_precision()),
+                                        ts_event,
+                                        ts_init,
+                                    );
+                                    if let Err(e) =
+                                        sender.send(DataEvent::Data(Data::OpenInterest(oi)))
+                                    {
+                                        log::error!(
+                                            "Failed to emit OpenInterest event for {instrument_id}: {e}"
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "Failed to parse Binance OpenInterest value \
+                                         `{}` for {instrument_id}: {e}",
+                                        response.open_interest,
+                                    );
+                                }
+                            }
+                        }
+                        backoff = std::time::Duration::from_secs(1);
+                        tokio::select! {
+                            _ = cancellation.cancelled() => return,
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(
+                                interval_secs as u64,
+                            )) => {},
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Open interest poll failed for {instrument_id}: {e}; \
+                             backing off {backoff:?}",
+                        );
+                        tokio::select! {
+                            _ = cancellation.cancelled() => return,
+                            _ = tokio::time::sleep(backoff) => {},
+                        }
+                        backoff = std::cmp::min(backoff * 2, cap);
+                    }
+                }
+            }
+        });
+
+        self.oi_poll_tasks
+            .lock()
+            .expect(MUTEX_POISONED)
+            .insert(key, handle);
+    }
+
+    fn stop_open_interest_polling(&mut self, instrument_id: InstrumentId, interval_secs: u32) {
+        let key = (instrument_id, interval_secs);
+        if let Some(handle) = self.oi_poll_tasks.lock().expect(MUTEX_POISONED).remove(&key) {
+            handle.abort();
+        }
     }
 
     #[expect(clippy::too_many_arguments)]
@@ -1136,17 +1247,17 @@ impl DataClient for BinanceFuturesDataClient {
     fn subscribe(&mut self, cmd: SubscribeCustomData) -> anyhow::Result<()> {
         // Dispatch custom-data subscribes to venue-specific streams when the
         // `data_type.type_name` matches one the adapter knows how to source.
-        // For canonical `Liquidation` subscriptions this activates the
-        // per-symbol `@forceOrder` WS stream (the stream the Python adapter
-        // also routes on). `OpenInterest` REST polling in the Rust adapter
-        // remains deferred — Phase B scope note.
+        // * `Liquidation` activates the per-symbol `@forceOrder` WS stream.
+        // * `OpenInterest` starts a REST poll loop per (instrument, interval).
+        // Unknown type_names fall through to an explicit error (a silent no-op
+        // would starve the caller's handler forever without a signal).
         match cmd.data_type.type_name() {
             "Liquidation" => {
-                let Some(instrument_id) = cmd.data_type.instrument_id() else {
-                    log::warn!(
-                        "subscribe(SubscribeCustomData) for Liquidation missing instrument_id",
+                let Some(instrument_id) = safe_instrument_id_from_metadata(&cmd.data_type) else {
+                    anyhow::bail!(
+                        "subscribe(SubscribeCustomData) for Liquidation missing \
+                         `instrument_id` in metadata",
                     );
-                    return Ok(());
                 };
                 let ws = self.ws_client.clone();
                 let stream = format!(
@@ -1163,23 +1274,37 @@ impl DataClient for BinanceFuturesDataClient {
                 );
                 Ok(())
             }
-            other => {
-                log::debug!(
-                    "subscribe(SubscribeCustomData) not implemented for `{other}`",
-                );
+            "OpenInterest" => {
+                let Some(instrument_id) = safe_instrument_id_from_metadata(&cmd.data_type) else {
+                    anyhow::bail!(
+                        "subscribe(SubscribeCustomData) for OpenInterest missing \
+                         `instrument_id` in metadata",
+                    );
+                };
+                let interval_secs = cmd
+                    .data_type
+                    .metadata()
+                    .and_then(|m| m.get_u64("interval_secs"))
+                    .map(|v| v.max(5) as u32)
+                    .unwrap_or(5);
+                self.start_open_interest_polling(instrument_id, interval_secs);
                 Ok(())
             }
+            other => anyhow::bail!(
+                "subscribe(SubscribeCustomData) is not implemented for data_type `{other}` \
+                 on Binance Futures",
+            ),
         }
     }
 
     fn unsubscribe(&mut self, cmd: &UnsubscribeCustomData) -> anyhow::Result<()> {
         match cmd.data_type.type_name() {
             "Liquidation" => {
-                let Some(instrument_id) = cmd.data_type.instrument_id() else {
-                    log::warn!(
-                        "unsubscribe(UnsubscribeCustomData) for Liquidation missing instrument_id",
+                let Some(instrument_id) = safe_instrument_id_from_metadata(&cmd.data_type) else {
+                    anyhow::bail!(
+                        "unsubscribe(UnsubscribeCustomData) for Liquidation missing \
+                         `instrument_id` in metadata",
                     );
-                    return Ok(());
                 };
                 let ws = self.ws_client.clone();
                 let stream = format!(
@@ -1196,12 +1321,26 @@ impl DataClient for BinanceFuturesDataClient {
                 );
                 Ok(())
             }
-            other => {
-                log::debug!(
-                    "unsubscribe(UnsubscribeCustomData) not implemented for `{other}`",
-                );
+            "OpenInterest" => {
+                let Some(instrument_id) = safe_instrument_id_from_metadata(&cmd.data_type) else {
+                    anyhow::bail!(
+                        "unsubscribe(UnsubscribeCustomData) for OpenInterest missing \
+                         `instrument_id` in metadata",
+                    );
+                };
+                let interval_secs = cmd
+                    .data_type
+                    .metadata()
+                    .and_then(|m| m.get_u64("interval_secs"))
+                    .map(|v| v.max(5) as u32)
+                    .unwrap_or(5);
+                self.stop_open_interest_polling(instrument_id, interval_secs);
                 Ok(())
             }
+            other => anyhow::bail!(
+                "unsubscribe(UnsubscribeCustomData) is not implemented for data_type \
+                 `{other}` on Binance Futures",
+            ),
         }
     }
 
@@ -1877,4 +2016,17 @@ impl DataClient for BinanceFuturesDataClient {
 
         Ok(())
     }
+}
+
+/// Extracts the `instrument_id` from a `DataType`'s metadata without panicking.
+///
+/// `DataType::instrument_id()` panics when metadata is `None` and returns
+/// `Option<InstrumentId>` only when metadata exists but `instrument_id` is
+/// absent — two separate failure modes merged into one call site. The
+/// subscribe path must never panic on user-constructed `DataType`s that
+/// omit metadata, so go through `metadata()` directly instead.
+fn safe_instrument_id_from_metadata(data_type: &DataType) -> Option<InstrumentId> {
+    use std::str::FromStr;
+    let instrument_id_str = data_type.metadata()?.get_str("instrument_id")?;
+    InstrumentId::from_str(instrument_id_str).ok()
 }

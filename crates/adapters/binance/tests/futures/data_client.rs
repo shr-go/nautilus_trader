@@ -226,6 +226,16 @@ fn create_data_test_router() -> Router {
                 }))
             }),
         )
+        .route(
+            "/fapi/v1/openInterest",
+            get(|| async {
+                json_response(&json!({
+                    "symbol": "BTCUSDT",
+                    "openInterest": "1234.567",
+                    "time": 1700000000000_i64,
+                }))
+            }),
+        )
         .route("/ws", get(handle_ws))
 }
 
@@ -527,6 +537,148 @@ async fn test_subscribe_mark_prices() {
         Duration::from_secs(5),
     )
     .await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_subscribe_custom_data_open_interest_starts_rest_poll() {
+    // Proves the Rust Binance adapter starts a REST poll task when a
+    // `SubscribeCustomData` for `DataType(OpenInterest, {...})` arrives.
+    // Previously this branch silently no-op'd, starving any Rust actor
+    // that used `DataActor::subscribe_open_interest`.
+    use nautilus_common::messages::data::SubscribeCustomData;
+    use nautilus_core::Params;
+    use nautilus_model::data::DataType;
+
+    let addr = start_data_test_server().await;
+    let base_url_http = format!("http://{addr}");
+    let base_url_ws = format!("ws://{addr}/ws");
+
+    let (mut client, mut rx) = create_test_data_client(base_url_http, base_url_ws);
+
+    client.connect().await.unwrap();
+    wait_until_async(
+        || {
+            let found = rx
+                .try_recv()
+                .is_ok_and(|e| matches!(e, DataEvent::Instrument(_)));
+            async move { found }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+    while rx.try_recv().is_ok() {}
+
+    let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+    let mut metadata = Params::new();
+    metadata.insert(
+        "instrument_id".to_string(),
+        serde_json::Value::String(instrument_id.to_string()),
+    );
+    metadata.insert(
+        "interval_secs".to_string(),
+        serde_json::Value::from(5u64),
+    );
+    let data_type = DataType::new(stringify!(OpenInterest), Some(metadata), None);
+    let cmd = SubscribeCustomData {
+        data_type,
+        client_id: Some(ClientId::from("BINANCE")),
+        venue: Some(instrument_id.venue),
+        command_id: nautilus_core::UUID4::new(),
+        ts_init: UnixNanos::default(),
+        correlation_id: None,
+        params: None,
+    };
+
+    client.subscribe(cmd).unwrap();
+
+    // Poll task should call the mock HTTP endpoint and emit an OpenInterest
+    // Data event within a few seconds.
+    wait_until_async(
+        || {
+            let found = rx.try_recv().is_ok_and(|e| matches!(e, DataEvent::Data(_)));
+            async move { found }
+        },
+        Duration::from_secs(15),
+    )
+    .await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_subscribe_custom_data_missing_metadata_returns_error_not_panic() {
+    // Previously the adapter called `DataType::instrument_id()` which panics
+    // when metadata is `None`. A user-built `DataType` without metadata must
+    // produce a clean `Err`, never a thread panic.
+    use nautilus_common::messages::data::SubscribeCustomData;
+    use nautilus_model::data::DataType;
+
+    let addr = start_data_test_server().await;
+    let base_url_http = format!("http://{addr}");
+    let base_url_ws = format!("ws://{addr}/ws");
+
+    let (mut client, _rx) = create_test_data_client(base_url_http, base_url_ws);
+    client.connect().await.unwrap();
+
+    let data_type = DataType::new(stringify!(Liquidation), None, None);
+    let cmd = SubscribeCustomData {
+        data_type,
+        client_id: Some(ClientId::from("BINANCE")),
+        venue: None,
+        command_id: nautilus_core::UUID4::new(),
+        ts_init: UnixNanos::default(),
+        correlation_id: None,
+        params: None,
+    };
+
+    let result = client.subscribe(cmd);
+    assert!(result.is_err(), "Liquidation subscribe without metadata must error");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("missing") && err.contains("instrument_id"),
+        "error should mention missing instrument_id, was: {err}",
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_subscribe_custom_data_unsupported_type_returns_error() {
+    // Unknown type_names must not silently succeed — that hides the fact
+    // that no stream or poll task has started.
+    use nautilus_common::messages::data::SubscribeCustomData;
+    use nautilus_core::Params;
+    use nautilus_model::data::DataType;
+
+    let addr = start_data_test_server().await;
+    let base_url_http = format!("http://{addr}");
+    let base_url_ws = format!("ws://{addr}/ws");
+
+    let (mut client, _rx) = create_test_data_client(base_url_http, base_url_ws);
+    client.connect().await.unwrap();
+
+    let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+    let mut metadata = Params::new();
+    metadata.insert(
+        "instrument_id".to_string(),
+        serde_json::Value::String(instrument_id.to_string()),
+    );
+    let data_type = DataType::new("SomeUnknownType", Some(metadata), None);
+    let cmd = SubscribeCustomData {
+        data_type,
+        client_id: Some(ClientId::from("BINANCE")),
+        venue: Some(instrument_id.venue),
+        command_id: nautilus_core::UUID4::new(),
+        ts_init: UnixNanos::default(),
+        correlation_id: None,
+        params: None,
+    };
+
+    let result = client.subscribe(cmd);
+    assert!(result.is_err(), "unknown type_name must return Err");
+    assert!(
+        result.unwrap_err().to_string().contains("SomeUnknownType"),
+        "error should name the unsupported data_type",
+    );
 }
 
 #[rstest]
