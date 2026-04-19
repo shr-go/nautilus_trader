@@ -5213,6 +5213,8 @@ class NautilusDataType(Enum):
     TradeTick = 4
     Bar = 5
     MarkPriceUpdate = 6
+    Liquidation = 7
+    OpenInterest = 8
 
 class DataBackendSession:
     def __init__(self, chunk_size: int = 10_000) -> None: ...
