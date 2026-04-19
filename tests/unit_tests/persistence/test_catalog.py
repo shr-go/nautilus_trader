@@ -38,10 +38,13 @@ from nautilus_trader.model.data import BarSpecification
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.data import BookOrder
 from nautilus_trader.model.data import CustomData
+from nautilus_trader.model.data import Liquidation
+from nautilus_trader.model.data import OpenInterest
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.enums import BarAggregation
+from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.enums import PriceType
 from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import Venue
@@ -2728,3 +2731,54 @@ def test_backend_session_files_with_optimize_reads_entire_directory(
     assert len(data) == 6, f"Expected 6 trades from entire directory, was {len(data)}"
     prices = {str(trade.price) for trade in data}
     assert len(prices) == 2, f"Expected trades from both batches, was prices: {prices}"
+
+
+def test_catalog_liquidation_streaming_round_trip(catalog: ParquetDataCatalog) -> None:
+    # Persisted Liquidation must round-trip through the Rust streaming read path
+    # (`NautilusDataType.Liquidation` dispatch). A regression here breaks
+    # backtest replay of any liquidation feed.
+    from nautilus_trader.model.identifiers import InstrumentId
+
+    instrument_id = InstrumentId.from_str("ETHUSDT-PERP.BINANCE")
+    liq = Liquidation(
+        instrument_id,
+        OrderSide.BUY,
+        Quantity.from_str("0.014"),
+        Price.from_str("9910.00"),
+        OrderStatus.FILLED,
+        1_700_000_000_000_000_000,
+        1_700_000_000_500_000_000,
+    )
+
+    catalog.write_data([liq, liq])
+    out = catalog.query(Liquidation)
+
+    assert len(out) == 2
+    assert out[0].instrument_id == instrument_id
+    assert out[0].side == OrderSide.BUY
+    assert out[0].quantity == liq.quantity
+    assert out[0].price == liq.price
+    assert out[0].order_status == OrderStatus.FILLED
+
+
+def test_catalog_open_interest_streaming_round_trip(catalog: ParquetDataCatalog) -> None:
+    # Persisted OpenInterest must round-trip through the Rust streaming read path
+    # (`NautilusDataType.OpenInterest` dispatch).
+    from nautilus_trader.model.identifiers import InstrumentId
+
+    instrument_id = InstrumentId.from_str("ETHUSDT-PERP.BINANCE")
+    oi = OpenInterest(
+        instrument_id,
+        Quantity.from_str("100000"),
+        1_700_000_000_000_000_000,
+        1_700_000_000_500_000_000,
+    )
+
+    catalog.write_data([oi])
+    out = catalog.query(OpenInterest)
+
+    assert len(out) == 1
+    assert out[0].instrument_id == instrument_id
+    assert out[0].value == oi.value
+    assert out[0].ts_event == oi.ts_event
+    assert out[0].ts_init == oi.ts_init

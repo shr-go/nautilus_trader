@@ -52,7 +52,9 @@ from nautilus_trader.core.nautilus_pyo3 import NautilusDataType
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import DataType
+from nautilus_trader.model.data import Liquidation
 from nautilus_trader.model.data import MarkPriceUpdate
+from nautilus_trader.model.data import OpenInterest
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import OrderBookDepth10
@@ -1637,6 +1639,8 @@ class ParquetDataCatalog(BaseDataCatalog):
                 TradeTick,
                 Bar,
                 MarkPriceUpdate,
+                Liquidation,
+                OpenInterest,
             )
             or self._is_rust_custom_data(data_cls)
         ) and files is None:
@@ -1999,6 +2003,10 @@ class ParquetDataCatalog(BaseDataCatalog):
             return NautilusDataType.Bar
         elif data_cls == MarkPriceUpdate:
             return NautilusDataType.MarkPriceUpdate
+        elif data_cls == Liquidation:
+            return NautilusDataType.Liquidation
+        elif data_cls == OpenInterest:
+            return NautilusDataType.OpenInterest
         else:
             return None
 

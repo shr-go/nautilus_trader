@@ -20,7 +20,8 @@ use nautilus_core::{
     python::{IntoPyObjectNautilusExt, to_pyruntime_err},
 };
 use nautilus_model::data::{
-    Bar, Data, DataFFI, MarkPriceUpdate, OrderBookDelta, OrderBookDepth10, QuoteTick, TradeTick,
+    Bar, Data, DataFFI, Liquidation, MarkPriceUpdate, OpenInterest, OrderBookDelta,
+    OrderBookDepth10, QuoteTick, TradeTick,
 };
 use nautilus_serialization::arrow::custom::CustomDataDecoder;
 use pyo3::{prelude::*, types::PyCapsule};
@@ -57,6 +58,8 @@ pub enum NautilusDataType {
     TradeTick = 4,
     Bar = 5,
     MarkPriceUpdate = 6,
+    Liquidation = 7,
+    OpenInterest = 8,
 }
 
 #[pymethods]
@@ -117,6 +120,12 @@ impl DataBackendSession {
                 .map_err(to_pyruntime_err),
             NautilusDataType::MarkPriceUpdate => slf
                 .add_file::<MarkPriceUpdate>(table_name, file_path, sql_query, None)
+                .map_err(to_pyruntime_err),
+            NautilusDataType::Liquidation => slf
+                .add_file::<Liquidation>(table_name, file_path, sql_query, None)
+                .map_err(to_pyruntime_err),
+            NautilusDataType::OpenInterest => slf
+                .add_file::<OpenInterest>(table_name, file_path, sql_query, None)
                 .map_err(to_pyruntime_err),
         }
     }
