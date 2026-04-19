@@ -5361,6 +5361,8 @@ class NautilusDataType(Enum):
     Bar = 5
     MarkPriceUpdate = 6
     InstrumentStatus = 7
+    Liquidation = 8
+    OpenInterest = 9
 
 class DataBackendSession:
     def __init__(self, chunk_size: int = 10_000) -> None: ...
