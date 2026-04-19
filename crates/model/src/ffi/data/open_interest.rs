@@ -13,25 +13,44 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-pub mod bar;
-pub mod delta;
-pub mod deltas;
-pub mod depth;
-pub mod liquidation;
-pub mod open_interest;
-pub mod order;
-pub mod prices;
-pub mod quote;
-pub mod trade;
+use std::{
+    collections::hash_map::DefaultHasher,
+    ffi::c_char,
+    hash::{Hash, Hasher},
+};
 
-// TODO: https://blog.rust-lang.org/2024/03/30/i128-layout-update.html
-// i128 and u128 is now FFI compatible. However, since the clippy lint
-// hasn't been removed yet. We'll suppress with #[cfg_attr(feature = "high-precision", allow(improper_ctypes_definitions))]
+use nautilus_core::ffi::string::str_to_cstr;
 
-/// Clones a data instance.
-// FFI wrapper for cloning Data instances
+use crate::{
+    data::OpenInterest,
+    identifiers::InstrumentId,
+    types::Quantity,
+};
+
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "high-precision", allow(improper_ctypes_definitions))]
-pub extern "C" fn data_clone(data: &crate::data::DataFFI) -> crate::data::DataFFI {
-    data.clone()
+pub extern "C" fn open_interest_new(
+    instrument_id: InstrumentId,
+    value: Quantity,
+    ts_event: u64,
+    ts_init: u64,
+) -> OpenInterest {
+    OpenInterest::new(instrument_id, value, ts_event.into(), ts_init.into())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn open_interest_eq(lhs: &OpenInterest, rhs: &OpenInterest) -> u8 {
+    u8::from(lhs == rhs)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn open_interest_hash(value: &OpenInterest) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn open_interest_to_cstr(value: &OpenInterest) -> *const c_char {
+    str_to_cstr(&value.to_string())
 }

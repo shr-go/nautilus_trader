@@ -36,7 +36,9 @@ from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import FundingRateUpdate
 from nautilus_trader.model.data import InstrumentClose
 from nautilus_trader.model.data import InstrumentStatus
+from nautilus_trader.model.data import Liquidation
 from nautilus_trader.model.data import MarkPriceUpdate
+from nautilus_trader.model.data import OpenInterest
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import OrderBookDepth10
@@ -111,9 +113,11 @@ __all__ = [
     "InstrumentClose",
     "InstrumentId",
     "InstrumentStatus",
+    "Liquidation",
     "MarginBalance",
     "MarkPriceUpdate",
     "Money",
+    "OpenInterest",
     "OrderBook",
     "OrderBookDelta",
     "OrderBookDeltas",

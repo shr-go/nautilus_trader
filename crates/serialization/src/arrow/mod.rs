@@ -22,7 +22,9 @@ pub mod delta;
 pub mod depth;
 pub mod index_price;
 pub mod instrument;
+pub mod liquidation;
 pub mod mark_price;
+pub mod open_interest;
 pub mod quote;
 pub mod trade;
 
@@ -40,8 +42,9 @@ use arrow::{
 };
 use nautilus_model::{
     data::{
-        Data, IndexPriceUpdate, MarkPriceUpdate, bar::Bar, close::InstrumentClose,
-        delta::OrderBookDelta, depth::OrderBookDepth10, quote::QuoteTick, trade::TradeTick,
+        Data, IndexPriceUpdate, Liquidation, MarkPriceUpdate, OpenInterest, bar::Bar,
+        close::InstrumentClose, delta::OrderBookDelta, depth::OrderBookDepth10, quote::QuoteTick,
+        trade::TradeTick,
     },
     types::{
         PRICE_ERROR, PRICE_UNDEF, Price, QUANTITY_UNDEF, Quantity,
@@ -602,4 +605,44 @@ pub fn instrument_closes_to_arrow_record_batch_bytes(
     let first = data.first().unwrap();
     let metadata = first.metadata();
     InstrumentClose::encode_batch(&metadata, data).map_err(EncodingError::ArrowError)
+}
+
+/// Converts a vector of `Liquidation` into an Arrow `RecordBatch`.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - `data` is empty: `EncodingError::EmptyData`.
+/// - Encoding fails: `EncodingError::ArrowError`.
+#[expect(clippy::missing_panics_doc)] // Guarded by empty check
+pub fn liquidations_to_arrow_record_batch_bytes(
+    data: &[Liquidation],
+) -> Result<RecordBatch, EncodingError> {
+    if data.is_empty() {
+        return Err(EncodingError::EmptyData);
+    }
+
+    let first = data.first().unwrap();
+    let metadata = first.metadata();
+    Liquidation::encode_batch(&metadata, data).map_err(EncodingError::ArrowError)
+}
+
+/// Converts a vector of `OpenInterest` into an Arrow `RecordBatch`.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - `data` is empty: `EncodingError::EmptyData`.
+/// - Encoding fails: `EncodingError::ArrowError`.
+#[expect(clippy::missing_panics_doc)] // Guarded by empty check
+pub fn open_interest_to_arrow_record_batch_bytes(
+    data: &[OpenInterest],
+) -> Result<RecordBatch, EncodingError> {
+    if data.is_empty() {
+        return Err(EncodingError::EmptyData);
+    }
+
+    let first = data.first().unwrap();
+    let metadata = first.metadata();
+    OpenInterest::encode_batch(&metadata, data).map_err(EncodingError::ArrowError)
 }

@@ -368,6 +368,24 @@ class BinanceWebSocketClient:
         stream = f"{BinanceSymbol(symbol).lower()}@trade"
         await self._unsubscribe(stream)
 
+    async def subscribe_force_orders(self, symbol: str) -> None:
+        """
+        Subscribe to the per-symbol forceOrder (liquidation) stream.
+
+        Stream Name: <symbol>@forceOrder
+        Update Speed: Real-time.
+
+        """
+        stream = f"{BinanceSymbol(symbol).lower()}@forceOrder"
+        await self._subscribe(stream)
+
+    async def unsubscribe_force_orders(self, symbol: str) -> None:
+        """
+        Unsubscribe from the per-symbol forceOrder (liquidation) stream.
+        """
+        stream = f"{BinanceSymbol(symbol).lower()}@forceOrder"
+        await self._unsubscribe(stream)
+
     async def subscribe_bars(
         self,
         symbol: str,

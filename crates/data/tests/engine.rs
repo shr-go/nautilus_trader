@@ -68,8 +68,9 @@ use nautilus_model::defi::{
 };
 use nautilus_model::{
     data::{
-        Bar, BarType, Data, DataType, FundingRateUpdate, IndexPriceUpdate, MarkPriceUpdate,
-        OrderBookDeltas, OrderBookDeltas_API, OrderBookDepth10, QuoteTick, TradeTick,
+        Bar, BarType, Data, DataType, FundingRateUpdate, IndexPriceUpdate, Liquidation,
+        MarkPriceUpdate, OpenInterest, OrderBookDeltas, OrderBookDeltas_API, OrderBookDepth10,
+        QuoteTick, TradeTick,
         option_chain::StrikeRange,
         stubs::{OrderBookDeltaTestBuilder, stub_delta, stub_deltas, stub_depth10},
     },
@@ -4429,4 +4430,67 @@ fn test_subscribe_option_chain_atm_relative_requests_forward_prices(
         quote_subs, 0,
         "No quote subscriptions before forward price bootstrap"
     );
+}
+
+/// The Rust `DataEngine` publishes `Liquidation` on its canonical topic.
+/// `subscribe_data(DataType(Liquidation, ...))` is intentionally NOT supported
+/// for canonical types on the Rust side (see `handle_liquidation` comment);
+/// the Python adapter's dual-emit handles the `subscribe_data` path from
+/// Python. Rust subscribers must use the canonical topic.
+#[rstest]
+fn test_process_liquidation_publishes_on_canonical_topic(
+    audusd_sim: CurrencyPair,
+    data_engine: Rc<RefCell<DataEngine>>,
+) {
+    use nautilus_model::{
+        enums::{OrderSide, OrderStatus},
+        types::Quantity,
+    };
+
+    let instrument_id = audusd_sim.id;
+    let liq = Liquidation::new(
+        instrument_id,
+        OrderSide::Sell,
+        Quantity::from("0.500"),
+        Price::from("50000.10"),
+        OrderStatus::Filled,
+        UnixNanos::from(1),
+        UnixNanos::from(2),
+    );
+
+    let handler = msgbus::stubs::get_message_saving_handler::<Liquidation>(None);
+    let topic = switchboard::get_liquidation_topic(instrument_id);
+    msgbus::subscribe_any(topic.into(), handler.clone(), None);
+
+    data_engine.borrow_mut().process_data(Data::Liquidation(liq));
+
+    let messages = msgbus::stubs::get_saved_messages::<Liquidation>(&handler);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0], liq);
+}
+
+#[rstest]
+fn test_process_open_interest_publishes_on_canonical_topic(
+    audusd_sim: CurrencyPair,
+    data_engine: Rc<RefCell<DataEngine>>,
+) {
+    use nautilus_model::types::Quantity;
+
+    let instrument_id = audusd_sim.id;
+    let oi = OpenInterest::new(
+        instrument_id,
+        Quantity::from("12345.678"),
+        UnixNanos::from(1),
+        UnixNanos::from(2),
+    );
+
+    let handler = msgbus::stubs::get_message_saving_handler::<OpenInterest>(None);
+    let topic = switchboard::get_open_interest_topic(instrument_id);
+    msgbus::subscribe_any(topic.into(), handler.clone(), None);
+
+    data_engine.borrow_mut().process_data(Data::OpenInterest(oi));
+
+    let messages = msgbus::stubs::get_saved_messages::<OpenInterest>(&handler);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0], oi);
 }

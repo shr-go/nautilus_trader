@@ -285,6 +285,87 @@ typedef enum InstrumentCloseType {
 } InstrumentCloseType;
 
 /**
+ * The status for a specific order.
+ *
+ * An order is considered _open_ for the following status:
+ *  - `ACCEPTED`
+ *  - `TRIGGERED`
+ *  - `PENDING_UPDATE`
+ *  - `PENDING_CANCEL`
+ *  - `PARTIALLY_FILLED`
+ *
+ * An order is considered _in-flight_ for the following status:
+ *  - `SUBMITTED`
+ *  - `PENDING_UPDATE`
+ *  - `PENDING_CANCEL`
+ *
+ * An order is considered _closed_ for the following status:
+ *  - `DENIED`
+ *  - `REJECTED`
+ *  - `CANCELED`
+ *  - `EXPIRED`
+ *  - `FILLED`
+ */
+typedef enum OrderStatus {
+    /**
+     * The order is initialized (instantiated) within the Nautilus system.
+     */
+    INITIALIZED = 1,
+    /**
+     * The order was denied by the Nautilus system, either for being invalid, unprocessable or exceeding a risk limit.
+     */
+    DENIED = 2,
+    /**
+     * The order became emulated by the Nautilus system in the `OrderEmulator` component.
+     */
+    EMULATED = 3,
+    /**
+     * The order was released by the Nautilus system from the `OrderEmulator` component.
+     */
+    RELEASED = 4,
+    /**
+     * The order was submitted by the Nautilus system to the external service or trading venue (awaiting acknowledgement).
+     */
+    SUBMITTED = 5,
+    /**
+     * The order was acknowledged by the trading venue as being received and valid (may now be working).
+     */
+    ACCEPTED = 6,
+    /**
+     * The order was rejected by the trading venue.
+     */
+    REJECTED = 7,
+    /**
+     * The order was canceled (closed/done).
+     */
+    CANCELED = 8,
+    /**
+     * The order reached a GTD expiration (closed/done).
+     */
+    EXPIRED = 9,
+    /**
+     * The order STOP price was triggered on a trading venue.
+     */
+    TRIGGERED = 10,
+    /**
+     * The order is currently pending a request to modify on a trading venue.
+     */
+    PENDING_UPDATE = 11,
+    /**
+     * The order is currently pending a request to cancel on a trading venue.
+     */
+    PENDING_CANCEL = 12,
+    /**
+     * The order has been partially filled on a trading venue.
+     */
+    PARTIALLY_FILLED = 13,
+    /**
+     * The order has been completely filled on a trading venue (closed/done).
+     */
+    FILLED = 14,
+} OrderStatus;
+
+/**
  * An account type provided by a trading venue or broker.
  */
 typedef enum AccountType {
@@ -616,87 +697,6 @@ typedef enum OtoTriggerMode {
      */
     FULL = 1,
 } OtoTriggerMode;
-
-/**
- * The status for a specific order.
- *
- * An order is considered _open_ for the following status:
- *  - `ACCEPTED`
- *  - `TRIGGERED`
- *  - `PENDING_UPDATE`
- *  - `PENDING_CANCEL`
- *  - `PARTIALLY_FILLED`
- *
- * An order is considered _in-flight_ for the following status:
- *  - `SUBMITTED`
- *  - `PENDING_UPDATE`
- *  - `PENDING_CANCEL`
- *
- * An order is considered _closed_ for the following status:
- *  - `DENIED`
- *  - `REJECTED`
- *  - `CANCELED`
- *  - `EXPIRED`
- *  - `FILLED`
- */
-typedef enum OrderStatus {
-    /**
-     * The order is initialized (instantiated) within the Nautilus system.
-     */
-    INITIALIZED = 1,
-    /**
-     * The order was denied by the Nautilus system, either for being invalid, unprocessable or exceeding a risk limit.
-     */
-    DENIED = 2,
-    /**
-     * The order became emulated by the Nautilus system in the `OrderEmulator` component.
-     */
-    EMULATED = 3,
-    /**
-     * The order was released by the Nautilus system from the `OrderEmulator` component.
-     */
-    RELEASED = 4,
-    /**
-     * The order was submitted by the Nautilus system to the external service or trading venue (awaiting acknowledgement).
-     */
-    SUBMITTED = 5,
-    /**
-     * The order was acknowledged by the trading venue as being received and valid (may now be working).
-     */
-    ACCEPTED = 6,
-    /**
-     * The order was rejected by the trading venue.
-     */
-    REJECTED = 7,
-    /**
-     * The order was canceled (closed/done).
-     */
-    CANCELED = 8,
-    /**
-     * The order reached a GTD expiration (closed/done).
-     */
-    EXPIRED = 9,
-    /**
-     * The order STOP price was triggered on a trading venue.
-     */
-    TRIGGERED = 10,
-    /**
-     * The order is currently pending a request to modify on a trading venue.
-     */
-    PENDING_UPDATE = 11,
-    /**
-     * The order is currently pending a request to cancel on a trading venue.
-     */
-    PENDING_CANCEL = 12,
-    /**
-     * The order has been partially filled on a trading venue.
-     */
-    PARTIALLY_FILLED = 13,
-    /**
-     * The order has been completely filled on a trading venue (closed/done).
-     */
-    FILLED = 14,
-} OrderStatus;
 
 /**
  * The type of order.
@@ -1449,6 +1449,67 @@ typedef struct InstrumentClose_t {
 } InstrumentClose_t;
 
 /**
+ * Represents a forced-liquidation (venue-initiated) order event.
+ *
+ * Venues such as Binance Futures broadcast liquidation orders on dedicated streams.
+ * The canonical event captures just the information that is meaningful across venues.
+ * Venue-specific fields (time-in-force, order type, accumulated fill quantity, etc.)
+ * live on adapter-specific types.
+ */
+typedef struct Liquidation_t {
+    /**
+     * The instrument ID for the liquidation order.
+     */
+    struct InstrumentId_t instrument_id;
+    /**
+     * The side of the liquidation order (the side being liquidated out of).
+     */
+    enum OrderSide side;
+    /**
+     * The liquidation order quantity.
+     */
+    struct Quantity_t quantity;
+    /**
+     * The liquidation order price.
+     */
+    struct Price_t price;
+    /**
+     * The order status at the time of the event.
+     */
+    enum OrderStatus order_status;
+    /**
+     * UNIX timestamp (nanoseconds) when the liquidation event occurred at the venue.
+     */
+    uint64_t ts_event;
+    /**
+     * UNIX timestamp (nanoseconds) when the instance was created.
+     */
+    uint64_t ts_init;
+} Liquidation_t;
+
+/**
+ * Represents a sample of the open interest for a derivatives instrument at a venue.
+ */
+typedef struct OpenInterest_t {
+    /**
+     * The instrument ID for the open interest sample.
+     */
+    struct InstrumentId_t instrument_id;
+    /**
+     * The open interest value (contract-denominated quantity).
+     */
+    struct Quantity_t value;
+    /**
+     * UNIX timestamp (nanoseconds) when the sample was generated at the venue.
+     */
+    uint64_t ts_event;
+    /**
+     * UNIX timestamp (nanoseconds) when the instance was created.
+     */
+    uint64_t ts_init;
+} OpenInterest_t;
+
+/**
  * A C-compatible representation of [`Data`] for FFI.
  *
  * This enum matches the standard variants of [`Data`] but excludes the `Custom`
@@ -1464,6 +1525,8 @@ typedef enum Data_t_Tag {
     MARK_PRICE_UPDATE,
     INDEX_PRICE_UPDATE,
     INSTRUMENT_CLOSE,
+    LIQUIDATION,
+    OPEN_INTEREST,
 } Data_t_Tag;
 
 typedef struct Data_t {
@@ -1495,6 +1558,12 @@ typedef struct Data_t {
         };
         struct {
             struct InstrumentClose_t instrument_close;
+        };
+        struct {
+            struct Liquidation_t liquidation;
+        };
+        struct {
+            struct OpenInterest_t open_interest;
         };
     };
 } Data_t;
@@ -2200,6 +2269,31 @@ const struct BookOrder_t *orderbook_depth10_asks_array(const struct OrderBookDep
 const uint32_t *orderbook_depth10_bid_counts_array(const struct OrderBookDepth10_t *depth);
 
 const uint32_t *orderbook_depth10_ask_counts_array(const struct OrderBookDepth10_t *depth);
+
+struct Liquidation_t liquidation_new(struct InstrumentId_t instrument_id,
+                                     enum OrderSide side,
+                                     struct Quantity_t quantity,
+                                     struct Price_t price,
+                                     enum OrderStatus order_status,
+                                     uint64_t ts_event,
+                                     uint64_t ts_init);
+
+uint8_t liquidation_eq(const struct Liquidation_t *lhs, const struct Liquidation_t *rhs);
+
+uint64_t liquidation_hash(const struct Liquidation_t *value);
+
+const char *liquidation_to_cstr(const struct Liquidation_t *value);
+
+struct OpenInterest_t open_interest_new(struct InstrumentId_t instrument_id,
+                                        struct Quantity_t value,
+                                        uint64_t ts_event,
+                                        uint64_t ts_init);
+
+uint8_t open_interest_eq(const struct OpenInterest_t *lhs, const struct OpenInterest_t *rhs);
+
+uint64_t open_interest_hash(const struct OpenInterest_t *value);
+
+const char *open_interest_to_cstr(const struct OpenInterest_t *value);
 
 struct BookOrder_t book_order_new(enum OrderSide order_side,
                                   struct Price_t price,

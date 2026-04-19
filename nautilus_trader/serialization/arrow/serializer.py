@@ -33,7 +33,9 @@ from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import FundingRateUpdate
 from nautilus_trader.model.data import IndexPriceUpdate
 from nautilus_trader.model.data import InstrumentClose
+from nautilus_trader.model.data import Liquidation
 from nautilus_trader.model.data import MarkPriceUpdate
+from nautilus_trader.model.data import OpenInterest
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import OrderBookDepth10
@@ -68,6 +70,8 @@ NautilusRustDataType = Union[  # noqa: UP007 (mypy does not like pipe operators)
     nautilus_pyo3.MarkPriceUpdate,
     nautilus_pyo3.IndexPriceUpdate,
     nautilus_pyo3.InstrumentClose,
+    nautilus_pyo3.Liquidation,
+    nautilus_pyo3.OpenInterest,
 ]
 
 _ARROW_ENCODERS: dict[type, Callable] = {}
@@ -195,6 +199,16 @@ class ArrowSerializer:
                     batch_bytes = nautilus_pyo3.instrument_closes_to_arrow_record_batch_bytes(
                         pyo3_instrument_closes,
                     )
+                elif data_cls == Liquidation:
+                    pyo3_liquidations = Liquidation.to_pyo3_list(data)
+                    batch_bytes = nautilus_pyo3.liquidations_to_arrow_record_batch_bytes(
+                        pyo3_liquidations,
+                    )
+                elif data_cls == OpenInterest:
+                    pyo3_open_interest = OpenInterest.to_pyo3_list(data)
+                    batch_bytes = nautilus_pyo3.open_interest_to_arrow_record_batch_bytes(
+                        pyo3_open_interest,
+                    )
                 elif data_cls == OrderBookDepth10:
                     data = [
                         nautilus_pyo3.OrderBookDepth10.from_dict(OrderBookDepth10.to_dict(item))
@@ -317,6 +331,34 @@ class ArrowSerializer:
 
     @staticmethod
     def _deserialize_rust(data_cls: type, table: pa.Table) -> list[Data | Event]:
+        # Types that deserialize via a direct pyo3 Arrow-IPC decode instead of
+        # a V2 Wrangler class. The decoder takes Arrow IPC bytes and returns a
+        # list of pyo3 Rust objects, which we then round-trip to the Cython
+        # type via `from_pyo3`.
+        _DIRECT_DECODERS = {
+            Liquidation: (
+                nautilus_pyo3.liquidations_from_arrow_record_batch_bytes,
+                Liquidation.from_pyo3,
+            ),
+            OpenInterest: (
+                nautilus_pyo3.open_interest_from_arrow_record_batch_bytes,
+                OpenInterest.from_pyo3,
+            ),
+        }
+
+        if data_cls in _DIRECT_DECODERS:
+            decode_fn, from_pyo3 = _DIRECT_DECODERS[data_cls]
+            batches = table.to_batches() if isinstance(table, pa.Table) else [table]
+            result: list[Data | Event] = []
+            for batch in batches:
+                sink = BytesIO()
+                writer = pa.ipc.new_stream(sink, batch.schema)
+                writer.write_batch(batch)
+                writer.close()
+                for pyo3_obj in decode_fn(sink.getvalue()):
+                    result.append(from_pyo3(pyo3_obj))
+            return result
+
         Wrangler = {
             OrderBookDelta: OrderBookDeltaDataWranglerV2,
             OrderBookDeltas: OrderBookDeltaDataWranglerV2,
@@ -381,6 +423,8 @@ RUST_SERIALIZERS = {
     Bar,
     MarkPriceUpdate,
     IndexPriceUpdate,
+    Liquidation,
+    OpenInterest,
     # InstrumentClose,  # TODO: Not implemented yet
 }
 RUST_STR_SERIALIZERS = {s.__name__ for s in RUST_SERIALIZERS}

@@ -160,6 +160,56 @@ cdef extern from "../includes/model.h":
         # When the instrument expiration was reached.
         CONTRACT_EXPIRED # = 2,
 
+    # The status for a specific order.
+    #
+    # An order is considered _open_ for the following status:
+    #  - `ACCEPTED`
+    #  - `TRIGGERED`
+    #  - `PENDING_UPDATE`
+    #  - `PENDING_CANCEL`
+    #  - `PARTIALLY_FILLED`
+    #
+    # An order is considered _in-flight_ for the following status:
+    #  - `SUBMITTED`
+    #  - `PENDING_UPDATE`
+    #  - `PENDING_CANCEL`
+    #
+    # An order is considered _closed_ for the following status:
+    #  - `DENIED`
+    #  - `REJECTED`
+    #  - `CANCELED`
+    #  - `EXPIRED`
+    #  - `FILLED`
+    cpdef enum OrderStatus:
+        # The order is initialized (instantiated) within the Nautilus system.
+        INITIALIZED # = 1,
+        # The order was denied by the Nautilus system, either for being invalid, unprocessable or exceeding a risk limit.
+        DENIED # = 2,
+        # The order became emulated by the Nautilus system in the `OrderEmulator` component.
+        EMULATED # = 3,
+        # The order was released by the Nautilus system from the `OrderEmulator` component.
+        RELEASED # = 4,
+        # The order was submitted by the Nautilus system to the external service or trading venue (awaiting acknowledgement).
+        SUBMITTED # = 5,
+        # The order was acknowledged by the trading venue as being received and valid (may now be working).
+        ACCEPTED # = 6,
+        # The order was rejected by the trading venue.
+        REJECTED # = 7,
+        # The order was canceled (closed/done).
+        CANCELED # = 8,
+        # The order reached a GTD expiration (closed/done).
+        EXPIRED # = 9,
+        # The order STOP price was triggered on a trading venue.
+        TRIGGERED # = 10,
+        # The order is currently pending a request to modify on a trading venue.
+        PENDING_UPDATE # = 11,
+        # The order is currently pending a request to cancel on a trading venue.
+        PENDING_CANCEL # = 12,
+        # The order has been partially filled on a trading venue.
+        PARTIALLY_FILLED # = 13,
+        # The order has been completely filled on a trading venue (closed/done).
+        FILLED # = 14,
+
     # An account type provided by a trading venue or broker.
     cpdef enum AccountType:
         # An account with unleveraged cash assets only.
@@ -328,56 +378,6 @@ cdef extern from "../includes/model.h":
         PARTIAL # = 0,
         # Release child order(s) only once the parent is fully filled.
         FULL # = 1,
-
-    # The status for a specific order.
-    #
-    # An order is considered _open_ for the following status:
-    #  - `ACCEPTED`
-    #  - `TRIGGERED`
-    #  - `PENDING_UPDATE`
-    #  - `PENDING_CANCEL`
-    #  - `PARTIALLY_FILLED`
-    #
-    # An order is considered _in-flight_ for the following status:
-    #  - `SUBMITTED`
-    #  - `PENDING_UPDATE`
-    #  - `PENDING_CANCEL`
-    #
-    # An order is considered _closed_ for the following status:
-    #  - `DENIED`
-    #  - `REJECTED`
-    #  - `CANCELED`
-    #  - `EXPIRED`
-    #  - `FILLED`
-    cpdef enum OrderStatus:
-        # The order is initialized (instantiated) within the Nautilus system.
-        INITIALIZED # = 1,
-        # The order was denied by the Nautilus system, either for being invalid, unprocessable or exceeding a risk limit.
-        DENIED # = 2,
-        # The order became emulated by the Nautilus system in the `OrderEmulator` component.
-        EMULATED # = 3,
-        # The order was released by the Nautilus system from the `OrderEmulator` component.
-        RELEASED # = 4,
-        # The order was submitted by the Nautilus system to the external service or trading venue (awaiting acknowledgement).
-        SUBMITTED # = 5,
-        # The order was acknowledged by the trading venue as being received and valid (may now be working).
-        ACCEPTED # = 6,
-        # The order was rejected by the trading venue.
-        REJECTED # = 7,
-        # The order was canceled (closed/done).
-        CANCELED # = 8,
-        # The order reached a GTD expiration (closed/done).
-        EXPIRED # = 9,
-        # The order STOP price was triggered on a trading venue.
-        TRIGGERED # = 10,
-        # The order is currently pending a request to modify on a trading venue.
-        PENDING_UPDATE # = 11,
-        # The order is currently pending a request to cancel on a trading venue.
-        PENDING_CANCEL # = 12,
-        # The order has been partially filled on a trading venue.
-        PARTIALLY_FILLED # = 13,
-        # The order has been completely filled on a trading venue (closed/done).
-        FILLED # = 14,
 
     # The type of order.
     cpdef enum OrderType:
@@ -799,6 +799,39 @@ cdef extern from "../includes/model.h":
         # UNIX timestamp (nanoseconds) when the instance was created.
         uint64_t ts_init;
 
+    # Represents a forced-liquidation (venue-initiated) order event.
+    #
+    # Venues such as Binance Futures broadcast liquidation orders on dedicated streams.
+    # The canonical event captures just the information that is meaningful across venues.
+    # Venue-specific fields (time-in-force, order type, accumulated fill quantity, etc.)
+    # live on adapter-specific types.
+    cdef struct Liquidation_t:
+        # The instrument ID for the liquidation order.
+        InstrumentId_t instrument_id;
+        # The side of the liquidation order (the side being liquidated out of).
+        OrderSide side;
+        # The liquidation order quantity.
+        Quantity_t quantity;
+        # The liquidation order price.
+        Price_t price;
+        # The order status at the time of the event.
+        OrderStatus order_status;
+        # UNIX timestamp (nanoseconds) when the liquidation event occurred at the venue.
+        uint64_t ts_event;
+        # UNIX timestamp (nanoseconds) when the instance was created.
+        uint64_t ts_init;
+
+    # Represents a sample of the open interest for a derivatives instrument at a venue.
+    cdef struct OpenInterest_t:
+        # The instrument ID for the open interest sample.
+        InstrumentId_t instrument_id;
+        # The open interest value (contract-denominated quantity).
+        Quantity_t value;
+        # UNIX timestamp (nanoseconds) when the sample was generated at the venue.
+        uint64_t ts_event;
+        # UNIX timestamp (nanoseconds) when the instance was created.
+        uint64_t ts_init;
+
     # A C-compatible representation of [`Data`] for FFI.
     #
     # This enum matches the standard variants of [`Data`] but excludes the `Custom`
@@ -813,6 +846,8 @@ cdef extern from "../includes/model.h":
         MARK_PRICE_UPDATE,
         INDEX_PRICE_UPDATE,
         INSTRUMENT_CLOSE,
+        LIQUIDATION,
+        OPEN_INTEREST,
 
     cdef struct Data_t:
         Data_t_Tag tag;
@@ -825,6 +860,8 @@ cdef extern from "../includes/model.h":
         MarkPriceUpdate_t mark_price_update;
         IndexPriceUpdate_t index_price_update;
         InstrumentClose_t instrument_close;
+        Liquidation_t liquidation;
+        OpenInterest_t open_interest;
 
     # Represents a valid trader ID.
     cdef struct TraderId_t:
@@ -1300,6 +1337,31 @@ cdef extern from "../includes/model.h":
     const uint32_t *orderbook_depth10_bid_counts_array(const OrderBookDepth10_t *depth);
 
     const uint32_t *orderbook_depth10_ask_counts_array(const OrderBookDepth10_t *depth);
+
+    Liquidation_t liquidation_new(InstrumentId_t instrument_id,
+                                  OrderSide side,
+                                  Quantity_t quantity,
+                                  Price_t price,
+                                  OrderStatus order_status,
+                                  uint64_t ts_event,
+                                  uint64_t ts_init);
+
+    uint8_t liquidation_eq(const Liquidation_t *lhs, const Liquidation_t *rhs);
+
+    uint64_t liquidation_hash(const Liquidation_t *value);
+
+    const char *liquidation_to_cstr(const Liquidation_t *value);
+
+    OpenInterest_t open_interest_new(InstrumentId_t instrument_id,
+                                     Quantity_t value,
+                                     uint64_t ts_event,
+                                     uint64_t ts_init);
+
+    uint8_t open_interest_eq(const OpenInterest_t *lhs, const OpenInterest_t *rhs);
+
+    uint64_t open_interest_hash(const OpenInterest_t *value);
+
+    const char *open_interest_to_cstr(const OpenInterest_t *value);
 
     BookOrder_t book_order_new(OrderSide order_side,
                                Price_t price,

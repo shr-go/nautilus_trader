@@ -84,9 +84,9 @@ use nautilus_core::{
 };
 use nautilus_model::{
     data::{
-        Bar, CustomData, Data, HasTsInit, IndexPriceUpdate, MarkPriceUpdate, OrderBookDelta,
-        OrderBookDepth10, QuoteTick, TradeTick, close::InstrumentClose,
-        is_monotonically_increasing_by_init, to_variant,
+        Bar, CustomData, Data, HasTsInit, IndexPriceUpdate, Liquidation, MarkPriceUpdate,
+        OpenInterest, OrderBookDelta, OrderBookDepth10, QuoteTick, TradeTick,
+        close::InstrumentClose, is_monotonically_increasing_by_init, to_variant,
     },
     instruments::InstrumentAny,
 };
@@ -369,6 +369,8 @@ impl ParquetDataCatalog {
         let mut mark_prices: Vec<MarkPriceUpdate> = Vec::new();
         let mut index_prices: Vec<IndexPriceUpdate> = Vec::new();
         let mut closes: Vec<InstrumentClose> = Vec::new();
+        let mut liquidations: Vec<Liquidation> = Vec::new();
+        let mut open_interest: Vec<OpenInterest> = Vec::new();
         // Group custom data by full DataType identity (type_name + identifier + metadata)
         // so each batch is written to the correct path with consistent schema/metadata.
         let custom_data_key = |c: &CustomData| {
@@ -408,6 +410,12 @@ impl ParquetDataCatalog {
                 Data::InstrumentClose(c) => {
                     closes.push(c);
                 }
+                Data::Liquidation(l) => {
+                    liquidations.push(l);
+                }
+                Data::OpenInterest(o) => {
+                    open_interest.push(o);
+                }
                 Data::Custom(c) => {
                     custom_data.entry(custom_data_key(&c)).or_default().push(c);
                 }
@@ -424,6 +432,8 @@ impl ParquetDataCatalog {
         self.write_to_parquet(mark_prices, start, end, skip_disjoint_check)?;
         self.write_to_parquet(index_prices, start, end, skip_disjoint_check)?;
         self.write_to_parquet(closes, start, end, skip_disjoint_check)?;
+        self.write_to_parquet(liquidations, start, end, skip_disjoint_check)?;
+        self.write_to_parquet(open_interest, start, end, skip_disjoint_check)?;
 
         for (_, items) in custom_data {
             self.write_custom_data_batch(items, start, end, skip_disjoint_check)?;
@@ -3677,6 +3687,8 @@ impl_catalog_path_prefix!(Bar, "bars");
 impl_catalog_path_prefix!(IndexPriceUpdate, "index_prices");
 impl_catalog_path_prefix!(MarkPriceUpdate, "mark_prices");
 impl_catalog_path_prefix!(InstrumentClose, "instrument_closes");
+impl_catalog_path_prefix!(Liquidation, "liquidations");
+impl_catalog_path_prefix!(OpenInterest, "open_interest");
 impl_catalog_path_prefix!(InstrumentAny, "instruments");
 
 /// Converts timestamps to a filename using ISO 8601 format.

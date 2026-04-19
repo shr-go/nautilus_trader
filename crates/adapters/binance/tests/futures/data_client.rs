@@ -139,6 +139,28 @@ async fn handle_ws_connection(mut socket: WebSocket) {
                                 let _ = socket
                                     .send(Message::Text(mark_price.to_string().into()))
                                     .await;
+                            } else if stream.contains("@forceOrder") {
+                                let force_order = json!({
+                                    "e": "forceOrder",
+                                    "E": 1700000000000_i64,
+                                    "o": {
+                                        "s": "BTCUSDT",
+                                        "S": "SELL",
+                                        "o": "LIMIT",
+                                        "f": "IOC",
+                                        "q": "0.014",
+                                        "p": "50000.00",
+                                        "ap": "50000.12",
+                                        "X": "FILLED",
+                                        "l": "0.014",
+                                        "z": "0.014",
+                                        "T": 1700000000000_i64
+                                    }
+                                });
+                                tokio::time::sleep(Duration::from_millis(50)).await;
+                                let _ = socket
+                                    .send(Message::Text(force_order.to_string().into()))
+                                    .await;
                             }
                         }
                     }
@@ -201,6 +223,16 @@ fn create_data_test_router() -> Router {
                     "T": 1700000000000_i64,
                     "bids": [["50000.00", "1.000"], ["49999.00", "2.000"]],
                     "asks": [["50001.00", "0.500"], ["50002.00", "1.500"]]
+                }))
+            }),
+        )
+        .route(
+            "/fapi/v1/openInterest",
+            get(|| async {
+                json_response(&json!({
+                    "symbol": "BTCUSDT",
+                    "openInterest": "1234.567",
+                    "time": 1700000000000_i64,
                 }))
             }),
         )
@@ -492,6 +524,371 @@ async fn test_subscribe_mark_prices() {
     );
 
     client.subscribe_mark_prices(&cmd).unwrap();
+
+    wait_until_async(
+        || {
+            let found = rx.try_recv().is_ok_and(|e| matches!(e, DataEvent::Data(_)));
+            async move { found }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_open_interest_poll_tasks_cleared_on_disconnect() {
+    // Mechanical guard for the lifecycle fix: after `disconnect`, the
+    // adapter's internal `oi_poll_tasks` dict MUST be empty, so a subsequent
+    // `connect` + `subscribe_open_interest` isn't short-circuited by a stale
+    // handle left over from the prior connection.
+    use nautilus_common::messages::data::SubscribeCustomData;
+    use nautilus_core::Params;
+    use nautilus_model::data::DataType;
+
+    let addr = start_data_test_server().await;
+    let base_url_http = format!("http://{addr}");
+    let base_url_ws = format!("ws://{addr}/ws");
+
+    let (mut client, _rx) = create_test_data_client(base_url_http, base_url_ws);
+    client.connect().await.unwrap();
+
+    let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+    let mut metadata = Params::new();
+    metadata.insert(
+        "instrument_id".to_string(),
+        serde_json::Value::String(instrument_id.to_string()),
+    );
+    metadata.insert("interval_secs".to_string(), serde_json::Value::from(5u64));
+    let data_type = DataType::new(stringify!(OpenInterest), Some(metadata), None);
+    let cmd = SubscribeCustomData {
+        data_type,
+        client_id: Some(ClientId::from("BINANCE")),
+        venue: Some(instrument_id.venue),
+        command_id: nautilus_core::UUID4::new(),
+        ts_init: UnixNanos::default(),
+        correlation_id: None,
+        params: None,
+    };
+    client.subscribe(&cmd).unwrap();
+
+    // Precondition: exactly one task registered.
+    assert_eq!(client.oi_poll_task_count(), 1);
+
+    // Disconnect — must clear the dict (not merely cancel its token).
+    client.disconnect().await.unwrap();
+    assert_eq!(
+        client.oi_poll_task_count(),
+        0,
+        "disconnect must abort + clear every OI poll task",
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_open_interest_poll_survives_disconnect_reconnect_resubscribe() {
+    // Regression guard: an OI poll subscription must be cleanly torn down on
+    // disconnect and re-armed on a subsequent connect + subscribe. Previously
+    // the finished-but-not-yet-reaped task handle left in `oi_poll_tasks`
+    // could race with a fresh resubscribe, causing
+    // `start_open_interest_polling` to short-circuit and strand the actor
+    // with no poller.
+    use nautilus_common::messages::data::{SubscribeCustomData, UnsubscribeCustomData};
+    use nautilus_core::Params;
+    use nautilus_model::data::DataType;
+
+    let addr = start_data_test_server().await;
+    let base_url_http = format!("http://{addr}");
+    let base_url_ws = format!("ws://{addr}/ws");
+
+    let (mut client, mut rx) = create_test_data_client(base_url_http, base_url_ws);
+
+    client.connect().await.unwrap();
+    wait_until_async(
+        || {
+            let found = rx
+                .try_recv()
+                .is_ok_and(|e| matches!(e, DataEvent::Instrument(_)));
+            async move { found }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+    while rx.try_recv().is_ok() {}
+
+    let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+    let build_cmd = |interval: u64| -> SubscribeCustomData {
+        let mut metadata = Params::new();
+        metadata.insert(
+            "instrument_id".to_string(),
+            serde_json::Value::String(instrument_id.to_string()),
+        );
+        metadata.insert("interval_secs".to_string(), serde_json::Value::from(interval));
+        let data_type = DataType::new(stringify!(OpenInterest), Some(metadata), None);
+        SubscribeCustomData {
+            data_type,
+            client_id: Some(ClientId::from("BINANCE")),
+            venue: Some(instrument_id.venue),
+            command_id: nautilus_core::UUID4::new(),
+            ts_init: UnixNanos::default(),
+            correlation_id: None,
+            params: None,
+        }
+    };
+
+    // Subscribe once → expect at least one OI event.
+    client.subscribe(&build_cmd(5)).unwrap();
+    wait_until_async(
+        || {
+            let found = rx.try_recv().is_ok_and(|e| matches!(e, DataEvent::Data(_)));
+            async move { found }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    // Disconnect: the lifecycle hook must abort and clear the OI poll task
+    // so the bucket dict is empty.
+    client.disconnect().await.unwrap();
+    while rx.try_recv().is_ok() {}
+
+    // Reconnect + resubscribe: a fresh poll task must spawn even though the
+    // prior handle may not have been reaped yet by tokio. If the adapter
+    // silently short-circuited, no new OI event would ever arrive.
+    client.connect().await.unwrap();
+    wait_until_async(
+        || {
+            let found = rx
+                .try_recv()
+                .is_ok_and(|e| matches!(e, DataEvent::Instrument(_)));
+            async move { found }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+    while rx.try_recv().is_ok() {}
+
+    client.subscribe(&build_cmd(5)).unwrap();
+    wait_until_async(
+        || {
+            let found = rx.try_recv().is_ok_and(|e| matches!(e, DataEvent::Data(_)));
+            async move { found }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    // Clean up.
+    let mut metadata = Params::new();
+    metadata.insert(
+        "instrument_id".to_string(),
+        serde_json::Value::String(instrument_id.to_string()),
+    );
+    metadata.insert("interval_secs".to_string(), serde_json::Value::from(5u64));
+    let data_type = DataType::new(stringify!(OpenInterest), Some(metadata), None);
+    let _ = client.unsubscribe(&UnsubscribeCustomData {
+        data_type,
+        client_id: Some(ClientId::from("BINANCE")),
+        venue: Some(instrument_id.venue),
+        command_id: nautilus_core::UUID4::new(),
+        ts_init: UnixNanos::default(),
+        correlation_id: None,
+        params: None,
+    });
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_subscribe_custom_data_open_interest_starts_rest_poll() {
+    // Proves the Rust Binance adapter starts a REST poll task when a
+    // `SubscribeCustomData` for `DataType(OpenInterest, {...})` arrives.
+    // Previously this branch silently no-op'd, starving any Rust actor
+    // that used `DataActor::subscribe_open_interest`.
+    use nautilus_common::messages::data::SubscribeCustomData;
+    use nautilus_core::Params;
+    use nautilus_model::data::DataType;
+
+    let addr = start_data_test_server().await;
+    let base_url_http = format!("http://{addr}");
+    let base_url_ws = format!("ws://{addr}/ws");
+
+    let (mut client, mut rx) = create_test_data_client(base_url_http, base_url_ws);
+
+    client.connect().await.unwrap();
+    wait_until_async(
+        || {
+            let found = rx
+                .try_recv()
+                .is_ok_and(|e| matches!(e, DataEvent::Instrument(_)));
+            async move { found }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+    while rx.try_recv().is_ok() {}
+
+    let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+    let mut metadata = Params::new();
+    metadata.insert(
+        "instrument_id".to_string(),
+        serde_json::Value::String(instrument_id.to_string()),
+    );
+    metadata.insert(
+        "interval_secs".to_string(),
+        serde_json::Value::from(5u64),
+    );
+    let data_type = DataType::new(stringify!(OpenInterest), Some(metadata), None);
+    let cmd = SubscribeCustomData {
+        data_type,
+        client_id: Some(ClientId::from("BINANCE")),
+        venue: Some(instrument_id.venue),
+        command_id: nautilus_core::UUID4::new(),
+        ts_init: UnixNanos::default(),
+        correlation_id: None,
+        params: None,
+    };
+
+    client.subscribe(&cmd).unwrap();
+
+    // Poll task should call the mock HTTP endpoint and emit an OpenInterest
+    // Data event within a few seconds.
+    wait_until_async(
+        || {
+            let found = rx.try_recv().is_ok_and(|e| matches!(e, DataEvent::Data(_)));
+            async move { found }
+        },
+        Duration::from_secs(15),
+    )
+    .await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_subscribe_custom_data_missing_metadata_returns_error_not_panic() {
+    // Previously the adapter called `DataType::instrument_id()` which panics
+    // when metadata is `None`. A user-built `DataType` without metadata must
+    // produce a clean `Err`, never a thread panic.
+    use nautilus_common::messages::data::SubscribeCustomData;
+    use nautilus_model::data::DataType;
+
+    let addr = start_data_test_server().await;
+    let base_url_http = format!("http://{addr}");
+    let base_url_ws = format!("ws://{addr}/ws");
+
+    let (mut client, _rx) = create_test_data_client(base_url_http, base_url_ws);
+    client.connect().await.unwrap();
+
+    let data_type = DataType::new(stringify!(Liquidation), None, None);
+    let cmd = SubscribeCustomData {
+        data_type,
+        client_id: Some(ClientId::from("BINANCE")),
+        venue: None,
+        command_id: nautilus_core::UUID4::new(),
+        ts_init: UnixNanos::default(),
+        correlation_id: None,
+        params: None,
+    };
+
+    let result = client.subscribe(&cmd);
+    assert!(result.is_err(), "Liquidation subscribe without metadata must error");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("missing") && err.contains("instrument_id"),
+        "error should mention missing instrument_id, was: {err}",
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_subscribe_custom_data_unsupported_type_returns_error() {
+    // Unknown type_names must not silently succeed — that hides the fact
+    // that no stream or poll task has started.
+    use nautilus_common::messages::data::SubscribeCustomData;
+    use nautilus_core::Params;
+    use nautilus_model::data::DataType;
+
+    let addr = start_data_test_server().await;
+    let base_url_http = format!("http://{addr}");
+    let base_url_ws = format!("ws://{addr}/ws");
+
+    let (mut client, _rx) = create_test_data_client(base_url_http, base_url_ws);
+    client.connect().await.unwrap();
+
+    let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+    let mut metadata = Params::new();
+    metadata.insert(
+        "instrument_id".to_string(),
+        serde_json::Value::String(instrument_id.to_string()),
+    );
+    let data_type = DataType::new("SomeUnknownType", Some(metadata), None);
+    let cmd = SubscribeCustomData {
+        data_type,
+        client_id: Some(ClientId::from("BINANCE")),
+        venue: Some(instrument_id.venue),
+        command_id: nautilus_core::UUID4::new(),
+        ts_init: UnixNanos::default(),
+        correlation_id: None,
+        params: None,
+    };
+
+    let result = client.subscribe(&cmd);
+    assert!(result.is_err(), "unknown type_name must return Err");
+    assert!(
+        result.unwrap_err().to_string().contains("SomeUnknownType"),
+        "error should name the unsupported data_type",
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_subscribe_custom_data_liquidation_activates_force_order_stream() {
+    // Proves the Rust Binance adapter activates the `@forceOrder` WS stream
+    // when a `SubscribeCustomData` for `DataType(Liquidation, {...})` arrives
+    // — which is the command a Rust actor dispatches via
+    // `DataActor::subscribe_liquidations`. Without this override the subscribe
+    // would fall back to the default `log_not_implemented`, leaving the
+    // actor's handler permanently starved.
+    use nautilus_common::messages::data::SubscribeCustomData;
+    use nautilus_core::Params;
+    use nautilus_model::data::DataType;
+
+    let addr = start_data_test_server().await;
+    let base_url_http = format!("http://{addr}");
+    let base_url_ws = format!("ws://{addr}/ws");
+
+    let (mut client, mut rx) = create_test_data_client(base_url_http, base_url_ws);
+
+    client.connect().await.unwrap();
+    wait_until_async(
+        || {
+            let found = rx
+                .try_recv()
+                .is_ok_and(|e| matches!(e, DataEvent::Instrument(_)));
+            async move { found }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+    while rx.try_recv().is_ok() {}
+
+    let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+    let mut metadata = Params::new();
+    metadata.insert(
+        "instrument_id".to_string(),
+        serde_json::Value::String(instrument_id.to_string()),
+    );
+    let data_type = DataType::new(stringify!(Liquidation), Some(metadata), None);
+    let cmd = SubscribeCustomData {
+        data_type,
+        client_id: Some(ClientId::from("BINANCE")),
+        venue: Some(instrument_id.venue),
+        command_id: nautilus_core::UUID4::new(),
+        ts_init: UnixNanos::default(),
+        correlation_id: None,
+        params: None,
+    };
+
+    client.subscribe(&cmd).unwrap();
 
     wait_until_async(
         || {

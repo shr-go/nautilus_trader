@@ -18,12 +18,12 @@
 use nautilus_core::nanos::UnixNanos;
 use nautilus_model::{
     data::{
-        Bar, BarSpecification, BarType, BookOrder, FundingRateUpdate, IndexPriceUpdate,
+        Bar, BarSpecification, BarType, BookOrder, FundingRateUpdate, IndexPriceUpdate, Liquidation,
         MarkPriceUpdate, OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick,
     },
     enums::{
-        AggregationSource, AggressorSide, BarAggregation, BookAction, OrderSide, PriceType,
-        RecordFlag,
+        AggregationSource, AggressorSide, BarAggregation, BookAction, OrderSide, OrderStatus,
+        PriceType, RecordFlag,
     },
     identifiers::TradeId,
     instruments::{Instrument, InstrumentAny},
@@ -36,10 +36,11 @@ use super::{
     error::{BinanceWsError, BinanceWsResult},
     messages::{
         BinanceFuturesAggTradeMsg, BinanceFuturesBookTickerMsg, BinanceFuturesDepthUpdateMsg,
-        BinanceFuturesKlineMsg, BinanceFuturesMarkPriceMsg, BinanceFuturesTradeMsg,
+        BinanceFuturesKlineMsg, BinanceFuturesLiquidationMsg, BinanceFuturesMarkPriceMsg,
+        BinanceFuturesTradeMsg,
     },
 };
-use crate::common::enums::{BinanceKlineInterval, BinanceWsEventType};
+use crate::common::enums::{BinanceKlineInterval, BinanceOrderStatus, BinanceWsEventType};
 
 /// Parses an aggregate trade message into a `TradeTick`.
 ///
@@ -321,6 +322,66 @@ pub fn parse_mark_price(
     );
 
     Ok((mark_update, index_update, funding_update))
+}
+
+/// Maps a [`BinanceOrderStatus`] to the canonical Nautilus [`OrderStatus`].
+///
+/// Kept in lockstep with `_BINANCE_ORDER_STATUS_TO_NAUTILUS` in
+/// `nautilus_trader/adapters/binance/futures/schemas/market.py` and with the
+/// shared `BinanceEnumParser.ext_to_int_status` table so both backends publish
+/// the same canonical `OrderStatus` for a given liquidation event.
+fn map_binance_order_status(status: BinanceOrderStatus) -> OrderStatus {
+    match status {
+        BinanceOrderStatus::New | BinanceOrderStatus::PendingNew => OrderStatus::Accepted,
+        BinanceOrderStatus::PartiallyFilled => OrderStatus::PartiallyFilled,
+        BinanceOrderStatus::Filled
+        | BinanceOrderStatus::NewAdl
+        | BinanceOrderStatus::NewInsurance => OrderStatus::Filled,
+        BinanceOrderStatus::Canceled => OrderStatus::Canceled,
+        BinanceOrderStatus::PendingCancel => OrderStatus::PendingCancel,
+        BinanceOrderStatus::Rejected => OrderStatus::Rejected,
+        BinanceOrderStatus::Expired => OrderStatus::Expired,
+        BinanceOrderStatus::ExpiredInMatch => OrderStatus::Canceled,
+        BinanceOrderStatus::Unknown => OrderStatus::Accepted,
+    }
+}
+
+/// Parses a Binance Futures forceOrder message into the canonical [`Liquidation`].
+///
+/// Venue-specific details (order type, time-in-force, accumulated fill, trade time) are
+/// intentionally dropped here; the Python adapter layer preserves them on its
+/// `BinanceLiquidation` dataclass when required.
+///
+/// # Errors
+///
+/// Returns an error if price/quantity parsing fails.
+pub fn parse_liquidation(
+    msg: &BinanceFuturesLiquidationMsg,
+    instrument: &InstrumentAny,
+    ts_init: UnixNanos,
+) -> BinanceWsResult<Liquidation> {
+    let price = msg
+        .order
+        .price
+        .parse::<f64>()
+        .map_err(|e| BinanceWsError::ParseError(e.to_string()))?;
+    let quantity = msg
+        .order
+        .original_qty
+        .parse::<f64>()
+        .map_err(|e| BinanceWsError::ParseError(e.to_string()))?;
+
+    let ts_event = UnixNanos::from_millis(msg.event_time as u64);
+
+    Ok(Liquidation::new(
+        instrument.id(),
+        msg.order.side.into(),
+        Quantity::new(quantity, instrument.size_precision()),
+        Price::new(price, instrument.price_precision()),
+        map_binance_order_status(msg.order.status),
+        ts_event,
+        ts_init,
+    ))
 }
 
 /// Converts a Binance kline interval to a Nautilus `BarSpecification`.
@@ -708,6 +769,22 @@ mod tests {
         assert_eq!(msg.order.status, BinanceOrderStatus::Filled);
         assert_eq!(msg.order.accumulated_qty, "0.014");
         assert_eq!(msg.order.trade_time, 1_568_014_460_893);
+    }
+
+    #[rstest]
+    fn test_parse_liquidation() {
+        let msg: BinanceFuturesLiquidationMsg = load_market_fixture("liquidation_stream.json");
+        let instrument = sample_instrument();
+        let ts_init = UnixNanos::from(1_700_000_000_000_000_000u64);
+
+        let liq = parse_liquidation(&msg, &instrument, ts_init).unwrap();
+
+        assert_eq!(liq.instrument_id, instrument.id());
+        assert_eq!(liq.side, OrderSide::Sell);
+        assert_eq!(liq.quantity, Quantity::new(0.014, SIZE_PRECISION));
+        assert_eq!(liq.order_status, OrderStatus::Filled);
+        assert_eq!(liq.ts_event, UnixNanos::from(1_568_014_460_893_000_000u64));
+        assert_eq!(liq.ts_init, ts_init);
     }
 
     #[rstest]

@@ -16,7 +16,7 @@
 //! Live market data client implementation for the Binance Futures adapter.
 
 use std::sync::{
-    Arc, RwLock,
+    Arc, Mutex, RwLock,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -31,10 +31,11 @@ use nautilus_common::{
         data::{
             BarsResponse, DataResponse, InstrumentResponse, InstrumentsResponse, RequestBars,
             RequestInstrument, RequestInstruments, RequestTrades, SubscribeBars,
-            SubscribeBookDeltas, SubscribeFundingRates, SubscribeIndexPrices, SubscribeInstrument,
-            SubscribeInstruments, SubscribeMarkPrices, SubscribeQuotes, SubscribeTrades,
-            TradesResponse, UnsubscribeBars, UnsubscribeBookDeltas, UnsubscribeFundingRates,
-            UnsubscribeIndexPrices, UnsubscribeMarkPrices, UnsubscribeQuotes, UnsubscribeTrades,
+            SubscribeBookDeltas, SubscribeCustomData, SubscribeFundingRates, SubscribeIndexPrices,
+            SubscribeInstrument, SubscribeInstruments, SubscribeMarkPrices, SubscribeQuotes,
+            SubscribeTrades, TradesResponse, UnsubscribeBars, UnsubscribeBookDeltas,
+            UnsubscribeCustomData, UnsubscribeFundingRates, UnsubscribeIndexPrices,
+            UnsubscribeMarkPrices, UnsubscribeQuotes, UnsubscribeTrades,
             subscribe::SubscribeInstrumentStatus, unsubscribe::UnsubscribeInstrumentStatus,
         },
     },
@@ -46,7 +47,10 @@ use nautilus_core::{
     time::{AtomicTime, get_atomic_clock_realtime},
 };
 use nautilus_model::{
-    data::{BookOrder, Data, OrderBookDelta, OrderBookDeltas, OrderBookDeltas_API},
+    data::{
+        BookOrder, Data, DataType, OpenInterest, OrderBookDelta, OrderBookDeltas,
+        OrderBookDeltas_API,
+    },
     enums::{BookAction, BookType, MarketStatusAction, OrderSide, RecordFlag},
     identifiers::{ClientId, InstrumentId, Venue},
     instruments::{Instrument, InstrumentAny},
@@ -67,14 +71,15 @@ use crate::{
     config::BinanceDataClientConfig,
     futures::{
         http::{
-            client::BinanceFuturesHttpClient, models::BinanceOrderBook, query::BinanceDepthParams,
+            client::BinanceFuturesHttpClient, models::BinanceOrderBook,
+            query::{BinanceDepthParams, BinanceOpenInterestParams},
         },
         websocket::streams::{
             client::BinanceFuturesWebSocketClient,
             messages::BinanceFuturesWsStreamsMessage,
             parse_data::{
                 parse_agg_trade, parse_book_ticker, parse_depth_update, parse_kline,
-                parse_mark_price, parse_trade,
+                parse_liquidation, parse_mark_price, parse_trade,
             },
         },
     },
@@ -121,6 +126,10 @@ pub struct BinanceFuturesDataClient {
     book_buffers: Arc<AtomicMap<InstrumentId, BookBuffer>>,
     book_subscriptions: Arc<AtomicMap<InstrumentId, u32>>,
     mark_price_refs: Arc<AtomicMap<InstrumentId, u32>>,
+    // Open-interest REST polling: keyed by (instrument_id, interval_secs)
+    // so distinct cadences on the same instrument each get their own task
+    // and can be cancelled independently on unsubscribe.
+    oi_poll_tasks: Arc<Mutex<AHashMap<(InstrumentId, u32), JoinHandle<()>>>>,
     book_epoch: Arc<RwLock<u64>>,
 }
 
@@ -186,6 +195,7 @@ impl BinanceFuturesDataClient {
             book_buffers: Arc::new(AtomicMap::new()),
             book_subscriptions: Arc::new(AtomicMap::new()),
             mark_price_refs: Arc::new(AtomicMap::new()),
+            oi_poll_tasks: Arc::new(Mutex::new(AHashMap::new())),
             book_epoch: Arc::new(RwLock::new(0)),
         })
     }
@@ -211,7 +221,156 @@ impl BinanceFuturesDataClient {
         });
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Starts (or leaves running) a REST poll loop for a single
+    /// (instrument_id, interval_secs) bucket.
+    ///
+    /// The bucket is considered "alive" when its task is in `_tasks` AND
+    /// hasn't finished. If the previous task is still draining after a
+    /// cancellation (mid-HTTP-call when disconnect cancelled the token),
+    /// evict it and spawn a fresh one — otherwise a fast
+    /// disconnect -> reconnect -> resubscribe sequence can race with the
+    /// old task's cancellation and silently strand the actor with no poller.
+    fn start_open_interest_polling(
+        &mut self,
+        instrument_id: InstrumentId,
+        interval_secs: u32,
+    ) {
+        let key = (instrument_id, interval_secs);
+        {
+            let mut tasks = self.oi_poll_tasks.lock().expect(MUTEX_POISONED);
+            match tasks.get(&key) {
+                Some(existing) if !existing.is_finished() => {
+                    // Still-running task belongs to the current connection:
+                    // reuse it unless the cancellation token has been tripped
+                    // (disconnect/stop/reset), in which case it's about to
+                    // exit and a fresh task must take over.
+                    if !self.cancellation_token.is_cancelled() {
+                        return;
+                    }
+                    // Abort the stale task right away so it does not race
+                    // with the fresh one we're about to spawn.
+                    if let Some(stale) = tasks.remove(&key) {
+                        stale.abort();
+                    }
+                }
+                Some(_finished) => {
+                    tasks.remove(&key);
+                }
+                None => {}
+            }
+        }
+
+        let http = self.http_client.clone();
+        let sender = self.data_sender.clone();
+        let instruments = self.instruments.clone();
+        let cancellation = self.cancellation_token.clone();
+        // Reuse the adapter's injected clock so tests / replays that use an
+        // alternate `AtomicTime` don't see realtime `ts_init` values for
+        // OI samples while every other data stream on this client uses the
+        // injected clock — the drift would break monotonic-order checks.
+        let clock = self.clock;
+
+        let handle = get_runtime().spawn(async move {
+            let mut backoff = std::time::Duration::from_secs(1);
+            let cap = std::time::Duration::from_secs(60);
+            loop {
+                if cancellation.is_cancelled() {
+                    return;
+                }
+
+                let params = BinanceOpenInterestParams {
+                    symbol: format_binance_stream_symbol(&instrument_id).to_uppercase(),
+                };
+
+                match http.open_interest(&params).await {
+                    Ok(response) => {
+                        if let Some(instrument) = instruments.load().get(&instrument_id) {
+                            let ts_event = UnixNanos::from(
+                                (response.time as u64) * NANOSECONDS_IN_MILLISECOND,
+                            );
+                            let ts_init = clock.get_time_ns();
+                            match response.open_interest.parse::<f64>() {
+                                Ok(value) => {
+                                    let oi = OpenInterest::new(
+                                        instrument.id(),
+                                        Quantity::new(value, instrument.size_precision()),
+                                        ts_event,
+                                        ts_init,
+                                    );
+                                    if let Err(e) =
+                                        sender.send(DataEvent::Data(Data::OpenInterest(oi)))
+                                    {
+                                        log::error!(
+                                            "Failed to emit OpenInterest event for {instrument_id}: {e}"
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "Failed to parse Binance OpenInterest value \
+                                         `{}` for {instrument_id}: {e}",
+                                        response.open_interest,
+                                    );
+                                }
+                            }
+                        }
+                        backoff = std::time::Duration::from_secs(1);
+                        tokio::select! {
+                            _ = cancellation.cancelled() => return,
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(
+                                interval_secs as u64,
+                            )) => {},
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Open interest poll failed for {instrument_id}: {e}; \
+                             backing off {backoff:?}",
+                        );
+                        tokio::select! {
+                            _ = cancellation.cancelled() => return,
+                            _ = tokio::time::sleep(backoff) => {},
+                        }
+                        backoff = std::cmp::min(backoff * 2, cap);
+                    }
+                }
+            }
+        });
+
+        self.oi_poll_tasks
+            .lock()
+            .expect(MUTEX_POISONED)
+            .insert(key, handle);
+    }
+
+    fn stop_open_interest_polling(&mut self, instrument_id: InstrumentId, interval_secs: u32) {
+        let key = (instrument_id, interval_secs);
+        if let Some(handle) = self.oi_poll_tasks.lock().expect(MUTEX_POISONED).remove(&key) {
+            handle.abort();
+        }
+    }
+
+    /// Aborts every running OI poll task and clears the bucket dict.
+    ///
+    /// Called from the lifecycle hooks (`stop` / `disconnect` / `reset`) so
+    /// that a subsequent `connect` + `subscribe_open_interest` is guaranteed
+    /// to spawn a fresh task — stale-task short-circuits in
+    /// `start_open_interest_polling` would otherwise strand the resubscribed
+    /// actor when the old task is mid-exit after a token cancel.
+    fn clear_open_interest_polling(&mut self) {
+        let mut tasks = self.oi_poll_tasks.lock().expect(MUTEX_POISONED);
+        for (_, handle) in tasks.drain() {
+            handle.abort();
+        }
+    }
+
+    /// Returns the number of tracked OI poll tasks — test-only visibility.
+    #[doc(hidden)]
+    pub fn oi_poll_task_count(&self) -> usize {
+        self.oi_poll_tasks.lock().expect(MUTEX_POISONED).len()
+    }
+
+    #[expect(clippy::too_many_arguments)]
     fn handle_ws_message(
         msg: BinanceFuturesWsStreamsMessage,
         data_sender: &tokio::sync::mpsc::UnboundedSender<DataEvent>,
@@ -315,14 +474,12 @@ impl BinanceFuturesDataClient {
                 }
             }
             BinanceFuturesWsStreamsMessage::ForceOrder(ref liq_msg) => {
-                log::info!(
-                    "Liquidation: {} {:?} {:?} qty={} at price={}",
-                    liq_msg.order.symbol,
-                    liq_msg.order.side,
-                    liq_msg.order.status,
-                    liq_msg.order.original_qty,
-                    liq_msg.order.average_price,
-                );
+                if let Some(instrument) = cache.get(&liq_msg.order.symbol) {
+                    match parse_liquidation(liq_msg, instrument, ts_init) {
+                        Ok(liq) => Self::send_data(data_sender, Data::Liquidation(liq)),
+                        Err(e) => log::warn!("Failed to parse liquidation: {e}"),
+                    }
+                }
             }
             BinanceFuturesWsStreamsMessage::Ticker(ref ticker_msg) => {
                 log::debug!(
@@ -837,6 +994,7 @@ impl DataClient for BinanceFuturesDataClient {
     fn stop(&mut self) -> anyhow::Result<()> {
         log::info!("Stopping {id}", id = self.client_id);
         self.cancellation_token.cancel();
+        self.clear_open_interest_polling();
         self.is_connected.store(false, Ordering::Relaxed);
         Ok(())
     }
@@ -849,6 +1007,7 @@ impl DataClient for BinanceFuturesDataClient {
         for task in self.tasks.drain(..) {
             task.abort();
         }
+        self.clear_open_interest_polling();
 
         let mut ws = self.ws_client.clone();
         get_runtime().spawn(async move {
@@ -1039,6 +1198,7 @@ impl DataClient for BinanceFuturesDataClient {
         }
 
         self.cancellation_token.cancel();
+        self.clear_open_interest_polling();
 
         let _ = self.ws_client.close().await;
 
@@ -1065,6 +1225,106 @@ impl DataClient for BinanceFuturesDataClient {
 
     fn is_disconnected(&self) -> bool {
         !self.is_connected()
+    }
+
+    fn subscribe(&mut self, cmd: &SubscribeCustomData) -> anyhow::Result<()> {
+        // Dispatch custom-data subscribes to venue-specific streams when the
+        // `data_type.type_name` matches one the adapter knows how to source.
+        // * `Liquidation` activates the per-symbol `@forceOrder` WS stream.
+        // * `OpenInterest` starts a REST poll loop per (instrument, interval).
+        // Unknown type_names fall through to an explicit error (a silent no-op
+        // would starve the caller's handler forever without a signal).
+        match cmd.data_type.type_name() {
+            "Liquidation" => {
+                let Some(instrument_id) = safe_instrument_id_from_metadata(&cmd.data_type) else {
+                    anyhow::bail!(
+                        "subscribe(SubscribeCustomData) for Liquidation missing \
+                         `instrument_id` in metadata",
+                    );
+                };
+                let ws = self.ws_client.clone();
+                let stream = format!(
+                    "{}@forceOrder",
+                    format_binance_stream_symbol(&instrument_id)
+                );
+                self.spawn_ws(
+                    async move {
+                        ws.subscribe(vec![stream])
+                            .await
+                            .context("force-order subscription")
+                    },
+                    "force-order subscription",
+                );
+                Ok(())
+            }
+            "OpenInterest" => {
+                let Some(instrument_id) = safe_instrument_id_from_metadata(&cmd.data_type) else {
+                    anyhow::bail!(
+                        "subscribe(SubscribeCustomData) for OpenInterest missing \
+                         `instrument_id` in metadata",
+                    );
+                };
+                let interval_secs = cmd
+                    .data_type
+                    .metadata()
+                    .and_then(|m| m.get_u64("interval_secs"))
+                    .map(|v| v.max(5) as u32)
+                    .unwrap_or(5);
+                self.start_open_interest_polling(instrument_id, interval_secs);
+                Ok(())
+            }
+            other => anyhow::bail!(
+                "subscribe(SubscribeCustomData) is not implemented for data_type `{other}` \
+                 on Binance Futures",
+            ),
+        }
+    }
+
+    fn unsubscribe(&mut self, cmd: &UnsubscribeCustomData) -> anyhow::Result<()> {
+        match cmd.data_type.type_name() {
+            "Liquidation" => {
+                let Some(instrument_id) = safe_instrument_id_from_metadata(&cmd.data_type) else {
+                    anyhow::bail!(
+                        "unsubscribe(UnsubscribeCustomData) for Liquidation missing \
+                         `instrument_id` in metadata",
+                    );
+                };
+                let ws = self.ws_client.clone();
+                let stream = format!(
+                    "{}@forceOrder",
+                    format_binance_stream_symbol(&instrument_id)
+                );
+                self.spawn_ws(
+                    async move {
+                        ws.unsubscribe(vec![stream])
+                            .await
+                            .context("force-order unsubscription")
+                    },
+                    "force-order unsubscription",
+                );
+                Ok(())
+            }
+            "OpenInterest" => {
+                let Some(instrument_id) = safe_instrument_id_from_metadata(&cmd.data_type) else {
+                    anyhow::bail!(
+                        "unsubscribe(UnsubscribeCustomData) for OpenInterest missing \
+                         `instrument_id` in metadata",
+                    );
+                };
+                let interval_secs = cmd
+                    .data_type
+                    .metadata()
+                    .and_then(|m| m.get_u64("interval_secs"))
+                    .map(|v| v.max(5) as u32)
+                    .unwrap_or(5);
+                self.stop_open_interest_polling(instrument_id, interval_secs);
+                Ok(())
+            }
+            other => anyhow::bail!(
+                "unsubscribe(UnsubscribeCustomData) is not implemented for data_type \
+                 `{other}` on Binance Futures",
+            ),
+        }
     }
 
     fn subscribe_instruments(&mut self, _cmd: &SubscribeInstruments) -> anyhow::Result<()> {
@@ -1739,4 +1999,17 @@ impl DataClient for BinanceFuturesDataClient {
 
         Ok(())
     }
+}
+
+/// Extracts the `instrument_id` from a `DataType`'s metadata without panicking.
+///
+/// `DataType::instrument_id()` panics when metadata is `None` and returns
+/// `Option<InstrumentId>` only when metadata exists but `instrument_id` is
+/// absent — two separate failure modes merged into one call site. The
+/// subscribe path must never panic on user-constructed `DataType`s that
+/// omit metadata, so go through `metadata()` directly instead.
+fn safe_instrument_id_from_metadata(data_type: &DataType) -> Option<InstrumentId> {
+    use std::str::FromStr;
+    let instrument_id_str = data_type.metadata()?.get_str("instrument_id")?;
+    InstrumentId::from_str(instrument_id_str).ok()
 }

@@ -251,6 +251,14 @@ define_switchboard! {
     get_instrument_close_topic(instrument_id: InstrumentId) -> instrument_id,
     "data.close.{}.{}", instrument_id.venue, instrument_id.symbol;
 
+    liquidation_topics: InstrumentId,
+    get_liquidation_topic(instrument_id: InstrumentId) -> instrument_id,
+    "data.liquidations.{}.{}", instrument_id.venue, instrument_id.symbol;
+
+    open_interest_topics: InstrumentId,
+    get_open_interest_topic(instrument_id: InstrumentId) -> instrument_id,
+    "data.open_interest.{}.{}", instrument_id.venue, instrument_id.symbol;
+
     option_greeks_topics: InstrumentId,
     get_option_greeks_topic(instrument_id: InstrumentId) -> instrument_id,
     "data.option_greeks.{}.{}", instrument_id.venue, instrument_id.symbol;
@@ -319,6 +327,8 @@ define_wrappers! {
     get_funding_rate_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_instrument_status_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_instrument_close_topic(instrument_id: InstrumentId) -> MStr<Topic>,
+    get_liquidation_topic(instrument_id: InstrumentId) -> MStr<Topic>,
+    get_open_interest_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_option_greeks_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_option_chain_topic(series_id: OptionSeriesId) -> MStr<Topic>,
     get_order_fills_topic(instrument_id: InstrumentId) -> MStr<Topic>,

@@ -18,8 +18,8 @@ use std::{collections::HashMap, fs, io::Write, str::FromStr};
 use nautilus_core::{Params, UnixNanos};
 use nautilus_model::{
     data::{
-        Bar, BarSpecification, BarType, BookOrder, Data, HasTsInit, IndexPriceUpdate,
-        MarkPriceUpdate, OrderBookDelta, OrderBookDepth10, QuoteTick, TradeTick,
+        Bar, BarSpecification, BarType, BookOrder, Data, HasTsInit, IndexPriceUpdate, Liquidation,
+        MarkPriceUpdate, OpenInterest, OrderBookDelta, OrderBookDepth10, QuoteTick, TradeTick,
         depth::DEPTH10_LEN, is_monotonically_increasing_by_init, to_variant,
     },
     enums::{AggregationSource, AggressorSide, BarAggregation, BookAction, OrderSide, PriceType},
@@ -32,7 +32,7 @@ use nautilus_model::{
 };
 use nautilus_persistence::{
     backend::{
-        catalog::ParquetDataCatalog,
+        catalog::{CatalogPathPrefix, ParquetDataCatalog},
         session::{DataBackendSession, QueryResult},
     },
     test_data::{MacroYieldCurveData, RustTestCustomData, RustTestParamsCustomData},
@@ -250,6 +250,16 @@ fn create_index_bar(ts_init: u64) -> Bar {
         UnixNanos::from(0),
         UnixNanos::from(ts_init),
     )
+}
+
+#[rstest]
+fn test_liquidation_and_open_interest_catalog_path_stability() {
+    // These strings are wire-level and must not drift — any rename would orphan
+    // previously-written parquet data under the old directory. `Liquidation`
+    // keeps the plural Rust convention (mirrors "quotes", "trades", "bars");
+    // `OpenInterest` stays singular because "open interest" is uncountable.
+    assert_eq!(Liquidation::path_prefix(), "liquidations");
+    assert_eq!(OpenInterest::path_prefix(), "open_interest");
 }
 
 #[rstest]

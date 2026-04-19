@@ -69,3 +69,5 @@ exclude = ["BarAggregation", "OrderId", "OrderSideSpecified"]
 "MarkPriceUpdate" = "MarkPriceUpdate_t"
 "IndexPriceUpdate" = "IndexPriceUpdate_t"
 "InstrumentClose" = "InstrumentClose_t"
+"Liquidation" = "Liquidation_t"
+"OpenInterest" = "OpenInterest_t"

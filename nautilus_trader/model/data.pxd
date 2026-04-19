@@ -31,12 +31,15 @@ from nautilus_trader.core.rust.model cimport BookOrder_t
 from nautilus_trader.core.rust.model cimport BookType
 from nautilus_trader.core.rust.model cimport IndexPriceUpdate_t
 from nautilus_trader.core.rust.model cimport InstrumentCloseType
+from nautilus_trader.core.rust.model cimport Liquidation_t
 from nautilus_trader.core.rust.model cimport MarketStatusAction
 from nautilus_trader.core.rust.model cimport MarkPriceUpdate_t
+from nautilus_trader.core.rust.model cimport OpenInterest_t
 from nautilus_trader.core.rust.model cimport OrderBookDelta_t
 from nautilus_trader.core.rust.model cimport OrderBookDeltas_API
 from nautilus_trader.core.rust.model cimport OrderBookDepth10_t
 from nautilus_trader.core.rust.model cimport OrderSide
+from nautilus_trader.core.rust.model cimport OrderStatus
 from nautilus_trader.core.rust.model cimport PriceRaw
 from nautilus_trader.core.rust.model cimport PriceType
 from nautilus_trader.core.rust.model cimport QuantityRaw
@@ -534,6 +537,30 @@ cdef class IndexPriceUpdate(Data):
 
     @staticmethod
     cdef dict to_dict_c(IndexPriceUpdate obj)
+
+
+cdef class Liquidation(Data):
+    cdef Liquidation_t _mem
+
+    cdef str to_str(self)
+
+    @staticmethod
+    cdef Liquidation from_dict_c(dict values)
+
+    @staticmethod
+    cdef dict to_dict_c(Liquidation obj)
+
+
+cdef class OpenInterest(Data):
+    cdef OpenInterest_t _mem
+
+    cdef str to_str(self)
+
+    @staticmethod
+    cdef OpenInterest from_dict_c(dict values)
+
+    @staticmethod
+    cdef dict to_dict_c(OpenInterest obj)
 
 
 cdef class FundingRateUpdate(Data):
