@@ -279,7 +279,11 @@ impl BinanceFuturesDataClient {
         let sender = self.data_sender.clone();
         let instruments = self.instruments.clone();
         let cancellation = self.cancellation_token.clone();
-        let clock = get_atomic_clock_realtime();
+        // Reuse the adapter's injected clock so tests / replays that use an
+        // alternate `AtomicTime` don't see realtime `ts_init` values for
+        // OI samples while every other data stream on this client uses the
+        // injected clock — the drift would break monotonic-order checks.
+        let clock = self.clock;
 
         let handle = get_runtime().spawn(async move {
             let mut backoff = std::time::Duration::from_secs(1);

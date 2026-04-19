@@ -44,6 +44,8 @@ from nautilus_trader.adapters.binance.factories import BinanceLiveExecClientFact
 from nautilus_trader.adapters.binance.factories import get_cached_binance_http_client
 from nautilus_trader.adapters.binance.futures.providers import BinanceFuturesInstrumentProvider
 from nautilus_trader.adapters.binance.futures.types import BinanceFuturesMarkPriceUpdate
+from nautilus_trader.adapters.binance.futures.types import BinanceLiquidation
+from nautilus_trader.adapters.binance.futures.types import BinanceOpenInterest
 from nautilus_trader.adapters.binance.loaders import BinanceOrderBookDeltaDataLoader
 from nautilus_trader.adapters.binance.spot.providers import BinanceSpotInstrumentProvider
 from nautilus_trader.core import nautilus_pyo3
@@ -107,6 +109,54 @@ register_arrow(
     decoder=make_dict_deserializer(BinanceFuturesMarkPriceUpdate),
 )
 
+
+BINANCE_LIQUIDATION_ARROW_SCHEMA: Final[pa.schema] = pa.schema(
+    {
+        "instrument_id": pa.dictionary(pa.int64(), pa.string()),
+        "side": pa.string(),
+        "quantity": pa.string(),
+        "price": pa.string(),
+        "avg_price": pa.string(),
+        "order_status": pa.string(),
+        "order_type": pa.string(),
+        "time_in_force": pa.string(),
+        "last_filled_qty": pa.string(),
+        "accumulated_qty": pa.string(),
+        "trade_time_ms": pa.uint64(),
+        "ts_event": pa.uint64(),
+        "ts_init": pa.uint64(),
+    },
+)
+
+NAUTILUS_ARROW_SCHEMA[BinanceLiquidation] = BINANCE_LIQUIDATION_ARROW_SCHEMA
+
+register_arrow(
+    BinanceLiquidation,
+    BINANCE_LIQUIDATION_ARROW_SCHEMA,
+    encoder=make_dict_serializer(BINANCE_LIQUIDATION_ARROW_SCHEMA),
+    decoder=make_dict_deserializer(BinanceLiquidation),
+)
+
+
+BINANCE_OPEN_INTEREST_ARROW_SCHEMA: Final[pa.schema] = pa.schema(
+    {
+        "instrument_id": pa.dictionary(pa.int64(), pa.string()),
+        "value": pa.string(),
+        "poll_interval_secs": pa.uint64(),
+        "ts_event": pa.uint64(),
+        "ts_init": pa.uint64(),
+    },
+)
+
+NAUTILUS_ARROW_SCHEMA[BinanceOpenInterest] = BINANCE_OPEN_INTEREST_ARROW_SCHEMA
+
+register_arrow(
+    BinanceOpenInterest,
+    BINANCE_OPEN_INTEREST_ARROW_SCHEMA,
+    encoder=make_dict_serializer(BINANCE_OPEN_INTEREST_ARROW_SCHEMA),
+    decoder=make_dict_deserializer(BinanceOpenInterest),
+)
+
 decode_binance_spot_client_order_id = nautilus_pyo3.binance.decode_binance_spot_client_order_id  # type: ignore[attr-defined]
 decode_binance_futures_client_order_id = (
     nautilus_pyo3.binance.decode_binance_futures_client_order_id  # type: ignore[attr-defined]
@@ -123,8 +173,10 @@ __all__ = [
     "BinanceFuturesMarkPriceUpdate",
     "BinanceInstrumentProviderConfig",
     "BinanceKeyType",
+    "BinanceLiquidation",
     "BinanceLiveDataClientFactory",
     "BinanceLiveExecClientFactory",
+    "BinanceOpenInterest",
     "BinanceOrderBookDeltaDataLoader",
     "BinanceSpotInstrumentProvider",
     "decode_binance_futures_client_order_id",

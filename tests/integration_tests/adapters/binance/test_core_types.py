@@ -21,7 +21,11 @@ import pytest
 from nautilus_trader.adapters.binance.common.types import BinanceBar
 from nautilus_trader.adapters.binance.common.types import BinanceTicker
 from nautilus_trader.adapters.binance.futures.types import BinanceFuturesMarkPriceUpdate
+from nautilus_trader.adapters.binance.futures.types import BinanceLiquidation
+from nautilus_trader.adapters.binance.futures.types import BinanceOpenInterest
 from nautilus_trader.model.data import BarType
+from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
@@ -459,3 +463,67 @@ def test_binance_mark_price_data_catalog_serialization(catalog: ParquetDataCatal
     assert result.next_funding_ns == update.next_funding_ns
     assert result.ts_event == update.ts_event
     assert result.ts_init == update.ts_init
+
+
+def test_binance_liquidation_data_catalog_serialization(catalog: ParquetDataCatalog):
+    # Arrange
+    liq = BinanceLiquidation(
+        instrument_id=TestIdStubs.ethusdt_perp_binance_id(),
+        side=OrderSide.BUY,
+        quantity=Quantity.from_str("0.014"),
+        price=Price.from_str("9910.00"),
+        avg_price=Price.from_str("9910.00"),
+        order_status=OrderStatus.FILLED,
+        order_type="LIMIT",
+        time_in_force="IOC",
+        last_filled_qty=Quantity.from_str("0.014"),
+        accumulated_qty=Quantity.from_str("0.014"),
+        trade_time_ms=1650000000001,
+        ts_event=1650000000000000001,
+        ts_init=1650000000000000000,
+    )
+
+    # Act
+    catalog.write_data([liq])
+    results = catalog.custom_data(cls=BinanceLiquidation)
+
+    # Assert
+    assert len(results) == 1
+    result = results[0].data
+    assert result.instrument_id == liq.instrument_id
+    assert result.side == liq.side
+    assert result.quantity == liq.quantity
+    assert result.price == liq.price
+    assert result.avg_price == liq.avg_price
+    assert result.order_status == liq.order_status
+    assert result.order_type == liq.order_type
+    assert result.time_in_force == liq.time_in_force
+    assert result.last_filled_qty == liq.last_filled_qty
+    assert result.accumulated_qty == liq.accumulated_qty
+    assert result.trade_time_ms == liq.trade_time_ms
+    assert result.ts_event == liq.ts_event
+    assert result.ts_init == liq.ts_init
+
+
+def test_binance_open_interest_data_catalog_serialization(catalog: ParquetDataCatalog):
+    # Arrange
+    oi = BinanceOpenInterest(
+        instrument_id=TestIdStubs.ethusdt_perp_binance_id(),
+        value=Quantity.from_str("100000"),
+        poll_interval_secs=60,
+        ts_event=1650000000000000001,
+        ts_init=1650000000000000000,
+    )
+
+    # Act
+    catalog.write_data([oi])
+    results = catalog.custom_data(cls=BinanceOpenInterest)
+
+    # Assert
+    assert len(results) == 1
+    result = results[0].data
+    assert result.instrument_id == oi.instrument_id
+    assert result.value == oi.value
+    assert result.poll_interval_secs == oi.poll_interval_secs
+    assert result.ts_event == oi.ts_event
+    assert result.ts_init == oi.ts_init
